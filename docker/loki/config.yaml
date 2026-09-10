@@ -1,0 +1,54 @@
+# Loki single-binary para desenvolvimento — espelho do Grafana Cloud.
+# O que importa para a Fase 1: aceitar logs rotulados por `execution_id`, que é
+# a chave de correlação entre a auditoria e o log da execução.
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2026-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # Reprocessamento por data-alvo antiga precisa aceitar log com timestamp
+  # retroativo, senão o desenvolvimento do reprocesso não é testável.
+  reject_old_samples: false
+  allow_structured_metadata: true
+  volume_enabled: true
+  retention_period: 168h
+
+compactor:
+  working_directory: /loki/compactor
+  delete_request_store: filesystem
+
+ruler:
+  storage:
+    local:
+      directory: /loki/rules
+  rule_path: /loki/rules-tmp
+  enable_api: true
+
+analytics:
+  reporting_enabled: false

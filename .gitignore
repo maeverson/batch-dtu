@@ -1,0 +1,15 @@
+# Coleta bruta do inventário legado: contratos, hostnames, nomes de cliente e caminhos internos.
+# NUNCA comitar. Ver seed/collect/README.md.
+seed/raw/*
+!seed/raw/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+
+# Ambiente virtual
+.venv/
+
+# Ambiente local
+.env
+docker/legacy/keys/

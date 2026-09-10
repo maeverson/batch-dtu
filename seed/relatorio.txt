@@ -1,0 +1,245 @@
+Relatório — geração do catálogo a partir de /opt2/batch_v2/batch-commons-framework
+
+Jobs encontrados (dedup): 846
+Isolados por convenção:   690 jobs em 52 códigos de cliente
+cliente-nao-identificado: 156 jobs (leitura caso a caso, lista abaixo)
+nome: null em todos os 52 códigos — confirmar com o owner do domínio.
+
+Não identificados, agrupados por prefixo tentativo (2 tokens):
+
+nuvy_stb (1)
+  - prd_nuvy_stb_per_idemia_ebc_envio
+
+lyn_jam (2)
+  - prd_lyn_jam_bs2.json.old_02022025
+  - prd_lyn_jam_dtx.json.old_02022025
+
+alianza_valle (5)
+  - prd_alianza_valle_ebc_env
+  - prd_alianza_valle_ebc_env.json_11032026
+  - prd_alianza_valle_ebc_env.json_12032026
+  - prd_alianza_valle_ecu_bs2
+  - prd_alianza_valle_ecu_dtx_env
+
+nuvy_bnp (2)
+  - prd_nuvy_bnp_pan_ebc_envio
+  - prd_nuvy_bnp_pan_ebc_envio.json.2026-08-20
+
+masivo_bs2 (1)
+  - prd_masivo_bs2
+
+lfm_col (1)
+  - prd_lfm_col_txn.json_CDPP-23470
+
+vnm_pan (1)
+  - prd_vnm_pan_catalogo
+
+mft_pan (12)
+  - prd_mft_pan_bs2.json.old_05022026
+  - prd_mft_pan_bs2.json.old_14082025
+  - prd_mft_pan_bs2.json.old_20022025
+  - prd_mft_pan_bs2.json_cdsi12426
+  - prd_mft_pan_ebc.json_08032025
+  - prd_mft_pan_ebc.json_29102025
+  - prd_mft_pan_rpt.json.old_14082025
+  - prd_mft_pan_rpt.json.old_20022025
+  - prd_mft_pan_rpt.json_31102025
+  - prd_mft_pan_rpt.json_CDPP_29643
+  - prd_mft_pan_sal.json_08032025
+  - prd_mft_pan_sal.json_10032025
+
+cod_col (2)
+  - prd_cod_col_mrm
+  - prd_cod_col_srm
+
+bnp_export (1)
+  - prd_bnp_export_customer_active
+
+bbt_int (5)
+  - prd_bbt_int_emi.json.old_28022025
+  - prd_bbt_int_emi.json_CDPP_25440
+  - prd_bbt_int_txn.json.CDPP-25439
+  - prd_bbt_int_txn.json.old_28022025
+  - prd_bbt_int_txn105
+
+zen_pri (3)
+  - prd_zen_pri_sal.json.old_25032025
+  - prd_zen_pri_sal.json_CDPP23588
+  - prd_zen_pri_txn.json_CDPP23588
+
+kub_mex (2)
+  - prd_kub_mex_ebc.json_04062026
+  - prd_kub_mex_srm
+
+fin_chl (2)
+  - prd_fin_chl_tx.json_CDPP-23450
+  - prd_fin_chl_tx.json_CDPP_23450
+
+bel_per (2)
+  - prd_bel_per_dtx.json.old_02022025
+  - prd_bel_per_sal.json.old_02022025
+
+novo_col (1)
+  - prd_novo_col_inventario_interno_visa
+
+ggt_cam (2)
+  - prd_ggt_cam_otr_validacion_programa_tarjetas_ggf
+  - prd_ggt_cam_otr_validacion_programa_tarjetas_ggv
+
+dil_hon (3)
+  - prd_dil_hon_bs2.json.old_02022025
+  - prd_dil_hon_bs2.json_13052025
+  - prd_dil_hon_ebc.json.old_02022025
+
+bnr_dom (1)
+  - prd_bnr_dom_ebc.json.old_16062025
+
+nxa_gtm (3)
+  - prd_nxa_gtm_ebc.json_05112025
+  - prd_nxa_gtm_ebc.json_CDPP-23778
+  - prd_nxa_gtm_ebc.json_CDSI-11078
+
+nuvy_dal (3)
+  - prd_nuvy_dal_col_ebc
+  - prd_nuvy_dal_col_ebc-CDPP-36334
+  - prd_nuvy_dal_col_rpt
+
+mio_dom (13)
+  - prd_mio_dom_bs2.json.CDPP-21456
+  - prd_mio_dom_bs2.json.CDPP-21456_v2
+  - prd_mio_dom_bs2.json.old_05062025
+  - prd_mio_dom_cargador_tarjetas_product2
+  - prd_mio_dom_cargador_tarjetas_product2.json_CDPP23707
+  - prd_mio_dom_cargador_tarjetas_product2.json_CDPP24539
+  - prd_mio_dom_cargador_tarjetas_product5
+  - prd_mio_dom_ebc.json_CDPP23707
+  - prd_mio_dom_ebc.json_CDPP24539
+  - prd_mio_dom_sal.json_CDPP23707
+  - prd_mio_dom_sal.json_CDPP24539
+  - prd_mio_dom_txn.json_CDPP23707
+  - prd_mio_dom_txn.json_CDPP24539
+
+dal_col (21)
+  - prd_dal_col_bs2.json.old_19112025
+  - prd_dal_col_ebc.json.CDPP-25642
+  - prd_dal_col_ebc.json.old_18112025
+  - prd_dal_col_ebc.json.old_22042025
+  - prd_dal_col_ebc.json.old_24092025_CDPP_29636
+  - prd_dal_col_ebc.json_06052026
+  - prd_dal_col_ebc.json_09012026
+  - prd_dal_col_ebc.json_19092025
+  - prd_dal_col_ebc.json_28032025
+  - prd_dal_col_ebc.json_31012025
+  - prd_dal_col_ebc.json_bad
+  - prd_dal_col_ebc.json_CDSI-11389
+  - prd_dal_col_ebc.json_CDSI-12447
+  - prd_dal_col_ebc.sh_bk-CDSI-12447
+  - prd_dal_col_emi.json.old_19112025
+  - prd_dal_col_emi.json_03102025
+  - prd_dal_col_emi.json_old_07102025
+  - prd_dal_col_nuvy_bs2
+  - prd_dal_col_nuvy_bs2.json_02072026
+  - prd_dal_col_nuvy_bs2.json_CDPP-35243
+  - prd_dal_col_txn.json_22072026
+
+teb_peru (1)
+  - prd_teb_peru_bs2.json_orig
+
+nex_gtm (1)
+  - prd_nex_gtm_bs2.json_CDPP-23778
+
+zin_pan (1)
+  - prd_zin_pan_txn.json_08032025
+
+zen_dom (1)
+  - prd_zen_dom_ebc.json_CDPP_23588
+
+wua_mex (3)
+  - prd_wua_mex_ebc.json.old_08072025
+  - prd_wua_mex_ebc.json_27052025
+  - prd_wua_mex_ebc.json_CDSI-7270
+
+ten_hon (1)
+  - prd_ten_hon_sal.json.old_02022025
+
+stb_ven (2)
+  - prd_stb_ven_ebc.json.20260804
+  - prd_stb_ven_historico_lotes
+
+sod_col (18)
+  - prd_sod_col_sal.json.old_11022025
+  - prd_sod_col_sal.json.old_11032026
+  - prd_sod_col_sal.json.old_25032025
+  - prd_sod_col_sal.json.old_27022025
+  - prd_sod_col_sal.json_01062025
+  - prd_sod_col_sal.json_07102025
+  - prd_sod_col_sal.json_27032025
+  - prd_sod_col_sal.json_28022025-MALO
+  - prd_sod_col_sal.json_CDPP-29848
+  - prd_sod_col_sal.json_CDPP-34766
+  - prd_sod_col_txn.json.old_11022025
+  - prd_sod_col_txn.json.old_11032026
+  - prd_sod_col_txn.json.old_27022025
+  - prd_sod_col_txn.json_07102025
+  - prd_sod_col_txn.json_17062026
+  - prd_sod_col_txn.json_26022026
+  - prd_sod_col_txn.json_CDPP-29848
+  - prd_sod_col_txn.json_CDPP-34772
+
+nuvy_sod (9)
+  - prd_nuvy_sod_col_otr_comisiones
+  - prd_nuvy_sod_col_otr_comisiones.json_20260709
+  - prd_nuvy_sod_col_sal
+  - prd_nuvy_sod_col_sal.json.bk_20260824_145510
+  - prd_nuvy_sod_col_sal.json_20260907
+  - prd_nuvy_sod_col_txn
+  - prd_nuvy_sod_col_txn.json_20260909
+  - prd_nuvy_sod_col_txn_dtx
+  - prd_nuvy_sod_col_txn_dtx.json_20260907
+
+mio_ban (2)
+  - prd_mio_ban_dom_bs2
+  - prd_mio_ban_dom_txn_pendientes_liberacion
+
+gua_ecu (2)
+  - prd_gua_ecu_bs2.json.old_11082025
+  - prd_gua_ecu_bs2.json_12082025
+
+bnp_pan (5)
+  - prd_bnp_pan_nuvy_bs2
+  - prd_bnp_pan_Pending
+  - prd_bnp_pan_rtb
+  - prd_bnp_pan_txn.json.CDPP-24391
+  - prd_bnp_pan_txn.json_25032025
+
+tup_pan (4)
+  - prd_tup_pan_batch_ajustes
+  - prd_tup_pan_ebc.json_CDPP-24758
+  - prd_tup_pan_emi.json_CDPP-24758
+  - prd_tup_pan_txn.json_CDPP-24758
+
+banru_gua (10)
+  - prd_banru_gua_bs2.json_20260909
+  - prd_banru_gua_customer_diario
+  - prd_banru_gua_customer_diario.json_11112025
+  - prd_banru_gua_customer_mensual
+  - prd_banru_gua_customer_mensual.json_11112025
+  - prd_banru_gua_env_txn
+  - prd_banru_gua_env_txn.json_11112025
+  - prd_banru_gua_pen_txn
+  - prd_banru_gua_pen_txn.json_11112025
+  - prd_banru_gua_sal.json_11112025
+
+ban_dom (7)
+  - prd_ban_dom_dtx.json.22052025
+  - prd_ban_dom_extraer_apertura_gaveta
+  - prd_ban_dom_gen_apertura_gaveta
+  - prd_ban_dom_pre_txn
+  - prd_ban_dom_pre_txn_manual
+  - prod_ban_dom_rw_cust_get
+  - prod_ban_dom_rw_cust_send
+
+Onde os nomes foram achados (para conferir SCAN_DIRS):
+  processes: 805
+  schedulers: 574
+  custom_scripts: 0

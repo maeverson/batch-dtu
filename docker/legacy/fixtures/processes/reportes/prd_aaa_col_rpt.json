@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "description": "Relatorio diario - fixture de desenvolvimento",
+  "steps": [
+    {"type": "download", "connection": "alias_sftp_interno", "file": "reporte_@@@YYYYMMDD@@@.csv", "stop_on_failed": true},
+    {"type": "copy_local", "file": "reporte_@@@YYYYMMDD@@@.csv", "stop_on_failed": false},
+    {"type": "upload", "connection": "alias_s3_interno", "file": "reporte_@@@YYYY@@@_@@@JULIANO@@@.csv", "stop_on_failed": false},
+    {"type": "send_mail", "stop_on_failed": false}
+  ]
+}

@@ -1,0 +1,28 @@
+# Stand-in local do Mimir. As métricas que interessam à plataforma:
+#   - execução ausente (não só erro) — alerta da Fase 3
+#   - divergências de reconciliação crontab x catálogo — Fase 1
+#   - duração e resultado por job/domínio/cliente
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: dev
+    platform: batch-dtu
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: loki
+    static_configs:
+      - targets: ["loki:3100"]
+
+  # Platform API rodando no host (fora do compose), via gateway do Docker.
+  - job_name: platform-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:8000"]
+        labels:
+          service: platform-api

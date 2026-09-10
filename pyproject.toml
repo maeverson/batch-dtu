@@ -1,0 +1,36 @@
+[project]
+name = "batch-dtu-catalog"
+version = "0.1.0"
+description = "Job Catalog da plataforma de jobs agendados (Batch DTU) — modelo, parser e importador do inventário legado"
+requires-python = ">=3.11"
+dependencies = [
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "pydantic>=2.6",
+    "jsonschema>=4.20",
+    "typer>=0.12",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+postgres = ["psycopg[binary]>=3.1"]
+
+[project.scripts]
+catalog = "catalog.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

@@ -1,0 +1,6 @@
+[
+  {"name": "alias_sftp_interno", "host": "sftp", "user": "cliente_teste", "password": "cliente_teste", "type": "SFTP"},
+  {"name": "alias_sftp_cliente", "host": "sftp", "user": "cliente_teste", "key": "/home/batch_user/.ssh/id_rsa", "type": "SFTP"},
+  {"name": "alias_s3_interno", "host": "batch-dev-bucket", "user": "", "key": "", "region": "us-east-1", "type": "S3"},
+  {"name": "alias_gpg_cliente", "host": "-", "user": "-", "key": "/home/batch_user/.gnupg/cliente.asc", "type": "GPG"}
+]

@@ -1,0 +1,98 @@
+# Vocabulário de curadoria do seed do job-catalog.
+#
+# Os nomes de contrato e de wrapper do legado seguem a convenção
+#   <ambiente>_<cliente...>_<pais...>_<abrev_dominio>_<sufixo_do_processo>
+# Ex.: prd_dal_col_bs2.json         -> PROD, cliente dal, país col, domínio base2
+#      prd_ggt_slv_cri_bs2_manual   -> PROD, cliente ggt, países slv+cri, base2, sufixo manual
+#      prd_nuvy_dal_col_ebc         -> PROD, cliente nuvy_dal, país col, emboces
+#
+# O parser NÃO adivinha: só resolve o que está declarado aqui. Código não mapeado
+# é preservado como `*_code` e contabilizado no relatório para curadoria.
+
+# Prefixo de ambiente. O legado usa três grafias para produção — confirmado no
+# inventário de 09/2026: 570x prd_, 2x prod_, 1x pro_.
+environments:
+  prd: PROD
+  prod: PROD
+  pro: PROD
+  uat: UAT
+  tst: TEST
+  test: TEST
+  dev: DEV
+
+# Abreviação de domínio -> diretório do framework (processes/<dominio>/).
+# O diretório é a fonte da verdade do domínio; a abreviação serve para localizar
+# a fronteira entre cliente/país e sufixo do processo dentro do nome.
+domains:
+  base2: [bs2]
+  emboces: [ebc]
+  emisiones: [emi]
+  transacciones: [txn, dtx, tx]
+  reportes: [rpt]
+  saldos: [sal]
+  otros: [otr]
+
+# Código de país -> ISO 3166-1 alpha-2. `INTL` marca processos multi-país
+# ("internacional"), que não têm país único.
+countries:
+  col: CO
+  colombia: CO
+  pan: PA
+  panama: PA
+  dom: DO
+  dominicana: DO
+  per: PE
+  peru: PE
+  ven: VE
+  venezuela: VE
+  gtm: GT
+  gua: GT
+  guatemala: GT
+  hon: HN
+  honduras: HN
+  ecu: EC
+  ecuador: EC
+  mex: MX
+  mexico: MX
+  slv: SV
+  salvador: SV
+  cri: CR
+  jam: JM
+  jamaica: JM
+  chl: CL
+  chile: CL
+  pri: PR
+  int: INTL
+  internacional: INTL
+  # Escopos regionais (não são ISO 3166): o job atende vários países.
+  cam: CAM          # Centroamérica
+
+# Código de cliente -> nome canônico. DELIBERADAMENTE VAZIO.
+#
+# `catalog import` gera o stub de curadoria em <--out>/clients.todo.yaml
+# (default: seed/raw/reports/clients.todo.yaml) com todos os códigos
+# encontrados e as evidências de cada um — domínios, países, nº de jobs,
+# exemplos de nome e aliases de conexão. Preencha `nome` com o owner do
+# domínio e traga os pares resolvidos para o mapa `clients` aqui.
+#
+# O stub fica fora do git de propósito: os nomes de job que ele cita
+# identificam cliente. Trazer o par código->nome para cá é decisão de quem
+# versiona este arquivo.
+#
+# Nenhum código é inventado aqui: adivinhar cliente errado num job de
+# upload_remote é risco de enviar arquivo ao cliente errado.
+clients: {}
+
+# Sufixos de nome que indicam variante/experimento e merecem revisão na carga.
+# Não alteram a semântica; entram como `flags` no registro do job.
+variant_suffixes:
+  - v2
+  - v3
+  - new
+  - old
+  - manual
+  - masivo
+  - test
+  - bkp
+  - copy
+  - np

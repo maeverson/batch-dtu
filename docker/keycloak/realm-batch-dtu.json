@@ -1,0 +1,231 @@
+{
+  "realm": "batch-dtu",
+  "displayName": "Batch DTU (dev) — stand-in do Entra ID",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "accessTokenLifespan": 900,
+  "roles": {
+    "realm": [
+      {
+        "name": "batch.viewer",
+        "description": "Ver catalogo, execucoes e logs"
+      },
+      {
+        "name": "batch.operator",
+        "description": "viewer + executar/reprocessar em UAT/TEST"
+      },
+      {
+        "name": "batch.operator-prod",
+        "description": "Operar em PROD; confirmacao reforcada para upload_remote"
+      },
+      {
+        "name": "batch.admin",
+        "description": "Gerir catalogo, escopo de roles, aprovar reprocessamentos sensiveis"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "back-office",
+      "name": "Back Office (SPA React)",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:5173/*"
+      },
+      "redirectUris": [
+        "http://localhost:5173/*",
+        "http://localhost:3001/*"
+      ],
+      "webOrigins": [
+        "http://localhost:5173",
+        "http://localhost:3001"
+      ],
+      "defaultClientScopes": [
+        "profile",
+        "email",
+        "roles"
+      ]
+    },
+    {
+      "clientId": "platform-api",
+      "name": "Platform API",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "platform-api-dev-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "attributes": {
+        "use.refresh.tokens": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "realm-roles-in-access-token",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "escopo-dominio",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "batch_domains",
+            "claim.name": "batch_domains",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "escopo-ambiente",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "batch_environments",
+            "claim.name": "batch_environments",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "viewer",
+      "email": "viewer@dev.local",
+      "firstName": "Usuario",
+      "lastName": "Viewer",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "viewer",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "batch.viewer"
+      ],
+      "attributes": {
+        "batch_domains": [
+          "*"
+        ],
+        "batch_environments": [
+          "PROD",
+          "UAT",
+          "TEST"
+        ]
+      }
+    },
+    {
+      "username": "operator",
+      "email": "operator@dev.local",
+      "firstName": "Usuario",
+      "lastName": "Operator",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "operator",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "batch.viewer",
+        "batch.operator"
+      ],
+      "attributes": {
+        "batch_domains": [
+          "otros",
+          "reportes"
+        ],
+        "batch_environments": [
+          "UAT",
+          "TEST"
+        ]
+      }
+    },
+    {
+      "username": "operator-prod",
+      "email": "operator-prod@dev.local",
+      "firstName": "Usuario",
+      "lastName": "Operator PROD",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "operator-prod",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "batch.viewer",
+        "batch.operator",
+        "batch.operator-prod"
+      ],
+      "attributes": {
+        "batch_domains": [
+          "otros",
+          "reportes",
+          "saldos",
+          "transacciones"
+        ],
+        "batch_environments": [
+          "PROD",
+          "UAT",
+          "TEST"
+        ]
+      }
+    },
+    {
+      "username": "admin-batch",
+      "email": "admin-batch@dev.local",
+      "firstName": "Usuario",
+      "lastName": "Admin",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "admin-batch",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "batch.viewer",
+        "batch.operator",
+        "batch.operator-prod",
+        "batch.admin"
+      ],
+      "attributes": {
+        "batch_domains": [
+          "*"
+        ],
+        "batch_environments": [
+          "PROD",
+          "UAT",
+          "TEST",
+          "DEV"
+        ]
+      }
+    }
+  ]
+}

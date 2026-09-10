@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: batch-dtu-catalog
+Version: 0.1.0
+Summary: Job Catalog da plataforma de jobs agendados (Batch DTU) — modelo, parser e importador do inventário legado
+Requires-Python: >=3.11
+Requires-Dist: sqlalchemy>=2.0
+Requires-Dist: alembic>=1.13
+Requires-Dist: pydantic>=2.6
+Requires-Dist: jsonschema>=4.20
+Requires-Dist: typer>=0.12
+Requires-Dist: pyyaml>=6.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Provides-Extra: postgres
+Requires-Dist: psycopg[binary]>=3.1; extra == "postgres"

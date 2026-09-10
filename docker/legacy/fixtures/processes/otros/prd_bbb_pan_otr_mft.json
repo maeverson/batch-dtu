@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "description": "MFT bulk - steps tolerantes a falha (dev_fail no step 2)",
+  "steps": [
+    {"type": "download", "connection": "alias_sftp_interno", "file": "lote_1_@@@YYYYMMDD@@@.txt", "stop_on_failed": false},
+    {"type": "upload_remote", "connection": "alias_sftp_cliente", "file": "lote_2_@@@YYYYMMDD@@@.txt", "stop_on_failed": false, "dev_fail": true},
+    {"type": "upload_remote", "connection": "alias_sftp_cliente", "file": "lote_3_@@@YYYYMMDD@@@.txt", "stop_on_failed": false},
+    {"type": "send_mail", "stop_on_failed": false}
+  ]
+}

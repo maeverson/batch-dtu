@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "description": "Fechamento Base2 - stop_on_failed=true em todos os steps",
+  "steps": [
+    {"type": "download_remote", "connection": "alias_sftp_cliente", "file": "clearing_@@@YYYYMMDD@@@.itf", "stop_on_failed": true},
+    {"type": "decrypt", "connection": "alias_gpg_cliente", "stop_on_failed": true},
+    {"type": "execute_command", "file": "procesar_clearing.sh", "stop_on_failed": true},
+    {"type": "encrypt", "connection": "alias_gpg_cliente", "stop_on_failed": true},
+    {"type": "upload_remote", "connection": "alias_sftp_cliente", "file": "salida_@@@YYYYMMDD@@@.itf", "stop_on_failed": true}
+  ]
+}
