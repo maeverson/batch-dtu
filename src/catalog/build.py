@@ -66,6 +66,12 @@ class JobRecord:
     cron_source: str | None
     cron_lineno: int | None
     connection_aliases: tuple[str, ...] = ()
+    step_functions: tuple[str, ...] = ()
+    # Declarado DENTRO do contrato — fonte autoritativa, superior ao nome
+    contract_client: str | None = None
+    contract_country: str | None = None
+    contract_environment: str | None = None
+    contract_process: str | None = None
     flags: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -81,6 +87,8 @@ class BuildResult:
     contracts: dict[str, Path]
     orphan_contracts: list[str]
     aliases_declared: set[str]
+    alias_metadata: list[dict]
+    host_info: dict[str, str]
 
     @property
     def enabled_jobs(self) -> list[JobRecord]:
@@ -185,7 +193,10 @@ def build_catalog(package: SeedPackage, vocab: Vocabulary) -> BuildResult:
                     "existe em disco e nenhum job agendado o referencia")
         )
 
-    aliases = _aliases_from_package(package)
+    _detect_client_outliers(jobs, findings)
+    _detect_undeclared_aliases(jobs, package, findings)
+
+    aliases, alias_metadata = _aliases_from_package(package)
 
     return BuildResult(
         host=package.host,
@@ -198,6 +209,8 @@ def build_catalog(package: SeedPackage, vocab: Vocabulary) -> BuildResult:
         contracts=contracts,
         orphan_contracts=orphans,
         aliases_declared=aliases,
+        alias_metadata=alias_metadata,
+        host_info=package.host_info,
     )
 
 
@@ -216,8 +229,8 @@ def _job_from_parts(
     process_name = Path(wrapper_path).stem if wrapper_path else "desconhecido"
     parsed: ProcessName = parse_process_name(process_name, vocab, domain_dir=domain)
 
-    contract_hash = contract_bytes = schema_version = steps_count = None
-    aliases: tuple[str, ...] = ()
+    contract_hash = contract_bytes = None
+    facts = ContractFacts()
     flags = list(parsed.flags)
 
     if contract_ref:
@@ -235,12 +248,14 @@ def _job_from_parts(
         else:
             contract_hash = sha256_file(local)
             contract_bytes = local.stat().st_size
-            schema_version, steps_count, aliases, parse_error = _inspect_contract(local)
-            if parse_error:
+            facts = _inspect_contract(local)
+            if facts.error:
                 findings.append(
-                    Finding("contrato-json-invalido", Severity.ERROR, contract_ref, parse_error)
+                    Finding("contrato-json-invalido", Severity.ERROR, contract_ref, facts.error)
                 )
                 flags.append("json-invalido")
+            if facts.schema_version is None and not facts.error:
+                flags.append("sem-schema-version")
             contract_domain = _domain_from_path(contract_ref, "processes")
             if contract_domain and domain and contract_domain != domain:
                 findings.append(
@@ -254,13 +269,40 @@ def _job_from_parts(
                     f"linha {invocation.lineno}: main.sh sem --process-file resolvido")
         )
 
+    # O contrato é a fonte autoritativa das dimensões: ele DECLARA client,
+    # country e environment. A convenção de nome é fallback para job sem
+    # contrato resolvido. Divergência entre as duas fontes é finding — é a
+    # mesma classe de risco do alias cujo nome cita um cliente e cuja
+    # credencial é de outro.
+    environment = _normalize_environment(facts.environment, vocab) or parsed.environment
+    client_name = facts.client or parsed.client_name
+    countries = _normalize_countries(facts.country, vocab) or parsed.country_codes
+
+    if facts.environment and parsed.environment and environment != parsed.environment:
+        findings.append(
+            Finding("dimensao-divergente", Severity.WARNING, process_name,
+                    f"environment: nome diz {parsed.environment}, contrato diz {facts.environment}")
+        )
+    # Comparação por CONJUNTO: `cri_slv_gtm` no nome e
+    # `costa_rica_guatemala_salvador` no contrato são o mesmo escopo em ordem
+    # diferente. Nome que é subconjunto do contrato é abreviação, não conflito
+    # (`prd_stb_per_...` com contrato `peru_colombia_venezuela`).
+    if facts.country and parsed.country_codes:
+        do_nome, do_contrato = set(parsed.country_codes), set(countries)
+        if do_nome and do_contrato and not do_nome.issubset(do_contrato):
+            findings.append(
+                Finding("dimensao-divergente", Severity.WARNING, process_name,
+                        f"country: nome diz {','.join(sorted(do_nome))}, "
+                        f"contrato diz {facts.country}")
+            )
+
     return JobRecord(
         process_name=process_name,
         domain=domain,
-        environment=parsed.environment,
+        environment=environment,
         client_code=parsed.client_code,
-        client_name=parsed.client_name,
-        country_codes=parsed.country_codes,
+        client_name=client_name,
+        country_codes=countries,
         schedule=entry.schedule,
         timezone=timezone,
         enabled=entry.enabled,
@@ -269,49 +311,200 @@ def _job_from_parts(
         contract_path=contract_ref,
         contract_hash=contract_hash,
         contract_bytes=contract_bytes,
-        schema_version=schema_version,
-        steps_count=steps_count,
+        schema_version=facts.schema_version,
+        steps_count=facts.steps_count,
         manual_steps=invocation.manual_steps if invocation else None,
         dates_pattern=invocation.dates_pattern if invocation else None,
         no_mail=bool(invocation.no_mail) if invocation else False,
         log_path=entry.log_path,
         cron_source=entry.source,
         cron_lineno=entry.lineno,
-        connection_aliases=aliases,
+        connection_aliases=facts.aliases,
+        step_functions=facts.functions,
+        contract_client=facts.client,
+        contract_country=facts.country,
+        contract_environment=facts.environment,
+        contract_process=facts.process,
         flags=tuple(flags),
     )
 
 
-def _inspect_contract(path: Path) -> tuple[str | None, int | None, tuple[str, ...], str | None]:
-    """Lê schema_version, número de steps e aliases citados no contrato."""
+# Schema real dos contratos, confirmado nos 574 arquivos de 09/2026:
+#   topo : name_process, client, country, environment, description,
+#          send_infra_mail, steps[], additional_info
+#   step : step, function, stop_on_failed + campos por função
+#          (files, server, server_remote, command, key, arguments, mails...)
+#
+# `schema_version` NÃO existe em nenhum contrato: o campo previsto no
+# invariante 1 é uma extensão futura, não o estado atual. Contrato sem ele é
+# registrado como versão de schema nula (legado), nunca como erro.
+#
+# O alias de conexão vive em `server`/`server_remote`. `local` é pseudo-alias
+# de operação local e não é conexão.
+STEP_ALIAS_KEYS = ("server", "server_remote")
+PSEUDO_ALIASES = frozenset({"local", "localhost", ""})
+
+
+@dataclass(frozen=True)
+class ContractFacts:
+    schema_version: str | None = None
+    steps_count: int | None = None
+    aliases: tuple[str, ...] = ()
+    functions: tuple[str, ...] = ()
+    client: str | None = None
+    country: str | None = None
+    environment: str | None = None
+    process: str | None = None
+    error: str | None = None
+
+
+def _inspect_contract(path: Path) -> ContractFacts:
+    """Extrai do contrato o que o catálogo precisa, no schema real."""
     import json
 
     try:
         data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
     except json.JSONDecodeError as exc:
-        return None, None, (), f"{exc.msg} (linha {exc.lineno}, coluna {exc.colno})"
+        return ContractFacts(error=f"{exc.msg} (linha {exc.lineno}, coluna {exc.colno})")
 
-    schema_version = None
-    steps: list = []
-    if isinstance(data, dict):
-        schema_version = data.get("schema_version") or data.get("schemaVersion")
-        raw_steps = data.get("steps") or data.get("Steps") or []
-        if isinstance(raw_steps, list):
-            steps = raw_steps
-    elif isinstance(data, list):
-        steps = data
+    if not isinstance(data, dict):
+        return ContractFacts(error="raiz do contrato nao e objeto JSON")
+
+    raw_steps = data.get("steps")
+    steps = raw_steps if isinstance(raw_steps, list) else []
 
     aliases: list[str] = []
+    functions: list[str] = []
     for step in steps:
         if not isinstance(step, dict):
             continue
-        for key in ("connection", "connection_name", "conexion", "alias"):
+        function = step.get("function")
+        if isinstance(function, str) and function:
+            functions.append(function)
+        for key in STEP_ALIAS_KEYS:
             value = step.get(key)
-            if isinstance(value, str) and value:
-                aliases.append(value)
+            if isinstance(value, str) and value.strip().lower() not in PSEUDO_ALIASES:
+                aliases.append(value.strip())
 
-    version = str(schema_version) if schema_version is not None else None
-    return version, len(steps), tuple(dict.fromkeys(aliases)), None
+    return ContractFacts(
+        schema_version=str(data["schema_version"]) if data.get("schema_version") else None,
+        steps_count=len(steps),
+        aliases=tuple(dict.fromkeys(aliases)),
+        functions=tuple(dict.fromkeys(functions)),
+        client=(data.get("client") or None),
+        country=(data.get("country") or None),
+        environment=(data.get("environment") or None),
+        process=(data.get("name_process") or None),
+    )
+
+
+def _detect_client_outliers(jobs: list[JobRecord], findings: list[Finding]) -> None:
+    """Código de cliente que quase sempre é um nome e raramente é outro.
+
+    O caso real: 110 jobs `stb_*` declaram `servitebca` e UM declara
+    `codesarrollo`. Não é variação ortográfica — é cliente errado no contrato,
+    a mesma classe de risco do alias cujo nome cita um cliente e cuja
+    credencial é de outro. Num step `upload_remote` significa mandar arquivo
+    para o cliente errado.
+    """
+    from collections import Counter, defaultdict
+
+    por_codigo: dict[str, Counter] = defaultdict(Counter)
+    exemplos: dict[tuple[str, str], str] = {}
+    for job in jobs:
+        if job.client_code and job.contract_client:
+            por_codigo[job.client_code][job.contract_client] += 1
+            exemplos.setdefault((job.client_code, job.contract_client), job.process_name)
+
+    for code, nomes in por_codigo.items():
+        if len(nomes) < 2:
+            continue
+        (dominante, quantos), *resto = nomes.most_common()
+        for nome, poucos in resto:
+            if _mesma_familia(nome, dominante):
+                continue  # variação ortográfica do mesmo cliente
+            if poucos * 10 <= quantos:
+                findings.append(
+                    Finding(
+                        "cliente-outlier-no-contrato", Severity.ERROR,
+                        exemplos[(code, nome)],
+                        f"codigo '{code}' declara '{nome}' em {poucos} job(s) mas "
+                        f"'{dominante}' em {quantos}; conferir o campo client do contrato",
+                    )
+                )
+            else:
+                findings.append(
+                    Finding(
+                        "codigo-de-cliente-ambiguo", Severity.WARNING, code,
+                        f"'{dominante}' ({quantos} jobs) e '{nome}' ({poucos} jobs) "
+                        "compartilham o mesmo codigo",
+                    )
+                )
+
+
+def _mesma_familia(a: str, b: str) -> bool:
+    """Variação ortográfica: caixa, separador ou um contendo o outro."""
+    x = a.lower().replace("_", "").replace("-", "")
+    y = b.lower().replace("_", "").replace("-", "")
+    return x == y or x in y or y in x
+
+
+def _detect_undeclared_aliases(
+    jobs: list[JobRecord], package: SeedPackage, findings: list[Finding]
+) -> None:
+    """Alias citado no contrato e ausente do connections.json.
+
+    O job falha na resolução de credencial em runtime — e hoje isso só aparece
+    quando o step quebra.
+    """
+    declarados, _ = _aliases_from_package(package)
+    if not declarados:
+        return
+    from collections import Counter
+
+    citados = Counter(a for job in jobs for a in job.connection_aliases)
+    for alias, usos in citados.items():
+        if alias not in declarados:
+            findings.append(
+                Finding("alias-nao-declarado", Severity.ERROR, alias,
+                        f"citado por {usos} job(s) e ausente do connections.json")
+            )
+
+
+def _normalize_environment(raw: str | None, vocab: Vocabulary) -> str | None:
+    """`environment` do contrato vem na mesma grafia do prefixo do nome (prd/uat...)."""
+    if not raw:
+        return None
+    return vocab.environments.get(raw.strip().lower())
+
+
+def _normalize_countries(raw: str | None, vocab: Vocabulary) -> tuple[str, ...]:
+    """`country` do contrato vem por extenso (`ecuador`, `republica_dominicana`)."""
+    if not raw:
+        return ()
+    token = raw.strip().lower().replace(" ", "_")
+    direct = vocab.countries.get(token)
+    if direct:
+        return (direct,)
+
+    # Nome composto (`costa_rica_guatemala_salvador`): casar pela MAIOR
+    # sequência de tokens primeiro, senão `costa_rica` se perde — nem `costa`
+    # nem `rica` existem isolados no vocabulário.
+    parts = [p for p in token.split("_") if p]
+    found: list[str] = []
+    index = 0
+    while index < len(parts):
+        for size in range(min(3, len(parts) - index), 0, -1):
+            candidate = "_".join(parts[index : index + size])
+            code = vocab.countries.get(candidate)
+            if code:
+                if code not in found:
+                    found.append(code)
+                index += size
+                break
+        else:
+            index += 1
+    return tuple(found)
 
 
 def _domain_from_path(path: str | None, anchor: str) -> str | None:
@@ -325,6 +518,23 @@ def _domain_from_path(path: str | None, anchor: str) -> str | None:
     return parts[0] if len(parts) > 1 else None
 
 
-def _aliases_from_package(package: SeedPackage) -> set[str]:
+ALIAS_COLUMNS = ("name", "type", "host", "username", "port", "region", "auth_method", "key_path")
+
+
+def _aliases_from_package(package: SeedPackage) -> tuple[set[str], list[dict]]:
+    """Aliases declarados no connections.json, como nomes e como metadado.
+
+    O coletor emite `name type host user port region auth key_path campos`;
+    nenhum valor de senha sai de lá, só o método de autenticação.
+    """
     section = package.first("CONNECTION-ALIASES")
-    return {row[0] for row in section.tsv() if row and row[0] and not row[0].startswith("(")}
+    names: set[str] = set()
+    rows: list[dict] = []
+    for row in section.tsv():
+        if not row or not row[0] or row[0].startswith("("):
+            continue
+        names.add(row[0])
+        record = {key: (row[index] if index < len(row) else "") or None
+                  for index, key in enumerate(ALIAS_COLUMNS)}
+        rows.append(record)
+    return names, rows

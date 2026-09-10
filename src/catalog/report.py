@@ -158,11 +158,60 @@ def write_findings_csv(result: BuildResult, path: Path) -> None:
     path.write_text(buffer.getvalue(), encoding="utf-8")
 
 
-def write_clients_todo(result: BuildResult, path: Path) -> None:
-    """Stub de curadoria: todo código de cliente encontrado, com evidências.
+def write_clients_mapping(result: BuildResult, path: Path) -> None:
+    """Mapa `código -> nome`, derivado do campo `client` dos contratos.
 
-    Nenhum nome é inventado — o arquivo sai com `null` para o owner preencher.
+    Antes de descobrir que o contrato DECLARA o cliente, este arquivo era um
+    stub com `null` para o owner preencher 59 códigos à mão. Agora o nome vem
+    do dado: para cada código, o nome dominante entre os contratos dos seus
+    jobs. Nada é inventado — o que exige decisão humana sai comentado:
+
+    * código ambíguo: dois clientes reais dividem o mesmo código de 3 letras;
+    * outlier: um contrato declara cliente diferente dos demais do código, o
+      que costuma ser erro de cópia — e num step `upload_remote` significa
+      mandar arquivo para o cliente errado.
     """
+    from collections import Counter, defaultdict
+
+    por_codigo: dict[str, Counter] = defaultdict(Counter)
+    exemplos: dict[str, set[str]] = defaultdict(set)
+    for job in result.jobs:
+        if job.client_code and job.contract_client:
+            por_codigo[job.client_code][job.contract_client] += 1
+            exemplos[job.client_code].add(job.process_name)
+
+    sem_contrato = sorted(
+        {j.client_code for j in result.jobs if j.client_code and not j.contract_client}
+    )
+
+    lines = [
+        "# Mapa codigo -> nome do cliente, DERIVADO do campo `client` dos contratos.",
+        "# Gerado por `catalog import`. Cole o bloco `clients:` em",
+        "# seed/mappings/vocabulary.yaml depois de revisar os casos comentados.",
+        "#",
+        "# ATENCAO aos blocos marcados AMBIGUO e OUTLIER: exigem decisao humana.",
+        "clients:",
+    ]
+    for code in sorted(por_codigo):
+        nomes = por_codigo[code]
+        (dominante, quantos), *resto = nomes.most_common()
+        lines.append(f"  {code}: {dominante}")
+        lines.append(f"    # {quantos} job(s); ex.: {sorted(exemplos[code])[0]}")
+        for nome, poucos in resto:
+            marca = "OUTLIER" if poucos * 10 <= quantos else "AMBIGUO"
+            lines.append(f"    # {marca}: {poucos} job(s) declaram '{nome}'")
+
+    if sem_contrato:
+        lines.append("")
+        lines.append("# Codigos sem contrato resolvido (nome nao derivavel; preencher a mao):")
+        for code in sem_contrato:
+            lines.append(f"#   {code}: null")
+
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_clients_todo(result: BuildResult, path: Path) -> None:
+    """Stub de curadoria para códigos cujo nome não veio do contrato."""
     evidence: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     for job in result.jobs:
         if not job.client_code or job.client_name:

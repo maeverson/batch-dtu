@@ -2,6 +2,8 @@
 
 Este repositório contém a documentação e as especificações para a evolução do parque de jobs agendados, em 3 fases (strangler fig sobre o legado `cron + main.sh`).
 
+> **Antes de iniciar qualquer trabalho**: consulte o `ROADMAP.md` na raiz — ele define a ordem de execução dos módulos, as dependências entre etapas e o estado atual (checkboxes). Ao concluir uma entrega, atualize os checkboxes correspondentes no roadmap.
+
 ## O que é este projeto
 
 O legado é um framework shell (`main.sh`) disparado por cron no host `com-ins-bch-mdw-dtu-1`, com **509 entradas** de crontab (390 ativas, 119 desabilitadas/on-demand), interpretando **contratos JSON declarativos** por job. A evolução substitui gradualmente agendamento, execução, segurança, auditoria e observabilidade — **preservando o contrato JSON como interface estável**.
@@ -22,17 +24,20 @@ O legado é um framework shell (`main.sh`) disparado por cron no host `com-ins-b
 
 ## Regras para desenvolvimento (Claude Code)
 
+- **Siga a ordem do `ROADMAP.md`.** Não inicie um módulo cujas dependências bloqueantes não estejam concluídas. Etapa atual: Fase 1, iniciando por `modules/job-catalog/`.
 - **Contrato da Platform API não muda entre fases.** Na Fase 1 ela traduz para SSH parametrizado; na Fase 2, enfileira no orchestrator. O Back Office nunca deve conhecer o mecanismo de execução.
 - **A API nunca interpola shell arbitrário.** Invocações são construídas a partir de campos tipados (processo do catálogo + steps + data); o wrapper server-side revalida (Fase 1).
 - **Catálogo é a fonte da verdade** para agendamento, RBAC (escopo domínio/cliente) e dashboards. A partir da Fase 2, crontab é artefato gerado/reconciliado, nunca editado manualmente.
 - **Paridade funcional do Executor v3 com `main.sh` é obrigatória** e verificada por suíte de testes de contrato + shadow execution com diff de artefatos antes de cada cutover.
 - Steps que fazem upload a clientes (`upload_remote`) exigem confirmação reforçada (Fase 1) e aprovação two-person (Fase 3).
 - Ambientes (PROD/UAT/TEST/DEV) devem ser tratados como dimensão explícita em catálogo, RBAC e (Fase 3) compute isolado — o legado os mistura num único crontab.
+- **Ao concluir uma entrega**, marque o checkbox correspondente no `ROADMAP.md` e verifique se o marco da etapa (🏁) foi atingido antes de avançar de fase.
 
 ## Mapa do repositório
 
 | Caminho | Conteúdo |
 |---|---|
+| `ROADMAP.md` | Ordem de execução dos módulos, dependências, checkboxes de progresso e marcos por fase |
 | `docs/` | Visão geral, princípios, contrato JSON, modelo de dados, segurança, observabilidade, migração, riscos |
 | `docs/adr/` | Decisões abertas (ADR-001 a 004) e template |
 | `docs/api/` | Contrato REST da Platform API (rascunho OpenAPI) |

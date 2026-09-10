@@ -13,3 +13,8 @@ __pycache__/
 # Ambiente local
 .env
 docker/legacy/keys/
+
+# Build artifacts
+*.egg-info/
+build/
+dist/

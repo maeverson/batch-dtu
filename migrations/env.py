@@ -14,7 +14,7 @@ from __future__ import annotations
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, pool, text
 
 from catalog.db.models import SCHEMA, Base
 from catalog.db.session import database_url
@@ -57,6 +57,13 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
+        # O Alembic grava `alembic_version` dentro do schema `catalog`, o que
+        # acontece ANTES de upgrade() rodar. Em banco novo o schema ainda não
+        # existe, então ele nasce aqui — a migration não pode depender de
+        # schema pré-criado à mão.
+        connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}"))
+        connection.commit()
+
         context.configure(
             connection=connection,
             target_metadata=target_metadata,

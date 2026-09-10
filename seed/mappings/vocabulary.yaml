@@ -41,6 +41,8 @@ countries:
   panama: PA
   dom: DO
   dominicana: DO
+  republica_dominicana: DO
+  rep_dominicana: DO
   per: PE
   peru: PE
   ven: VE
@@ -57,15 +59,21 @@ countries:
   slv: SV
   salvador: SV
   cri: CR
+  costa_rica: CR
+  costarica: CR
   jam: JM
   jamaica: JM
   chl: CL
   chile: CL
   pri: PR
+  puerto_rico: PR
+  pto_rico: PR
   int: INTL
   internacional: INTL
   # Escopos regionais (não são ISO 3166): o job atende vários países.
   cam: CAM          # Centroamérica
+  centro_america: CAM
+  internacional_cam: CAM
 
 # Código de cliente -> nome canônico. DELIBERADAMENTE VAZIO.
 #

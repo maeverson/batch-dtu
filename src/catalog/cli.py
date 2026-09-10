@@ -15,7 +15,13 @@ import typer
 
 from .build import Severity, build_catalog
 from .naming import Vocabulary
-from .report import render_markdown, write_clients_todo, write_findings_csv, write_jobs_csv
+from .report import (
+    render_markdown,
+    write_clients_mapping,
+    write_clients_todo,
+    write_findings_csv,
+    write_jobs_csv,
+)
 from .seedpkg import SeedPackage
 
 app = typer.Typer(add_completion=False, help="Job Catalog — Batch DTU")
@@ -39,6 +45,7 @@ def import_package(
     write_jobs_csv(result, out / f"jobs-{stem}.csv")
     write_findings_csv(result, out / f"findings-{stem}.csv")
     write_clients_todo(result, out / "clients.todo.yaml")
+    write_clients_mapping(result, out / "clients.derived.yaml")
 
     errors = sum(1 for f in result.findings if f.severity is Severity.ERROR)
     warnings = sum(1 for f in result.findings if f.severity is Severity.WARNING)
@@ -56,6 +63,51 @@ def import_package(
 
     if errors:
         raise typer.Exit(code=1)
+
+
+@app.command("load")
+def load(
+    package: Path = typer.Argument(..., help="Diretório do pacote extraído"),
+    vocabulary: Path | None = typer.Option(None, "--vocabulary"),
+    actor: str = typer.Option("cli", "--actor", help="Ator registrado na auditoria"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Simula e reverte a transação"),
+    role: str = typer.Option("app", "--role", help="Papel de conexão: app | migrations | test"),
+) -> None:
+    """Persiste o catálogo no banco. Idempotente: rodar de novo não duplica."""
+    from .db.repository import load_catalog
+    from .db.session import session_scope
+
+    pkg = SeedPackage(package)
+    vocab = Vocabulary.load(vocabulary)
+    result = build_catalog(pkg, vocab)
+
+    tarball = next(package.parent.glob(f"{package.name}.tar.gz"), None)
+    digest = None
+    if tarball is not None:
+        from .seedpkg import sha256_file
+
+        digest = sha256_file(tarball)
+
+    with session_scope(role) as session:
+        report = load_catalog(
+            result, session, actor=actor, source="cli", dry_run=dry_run, bundle_sha256=digest
+        )
+
+    typer.echo(f"host ..................: {report.host}")
+    if report.dry_run:
+        typer.echo("MODO ..................: dry-run (nada persistido)")
+    typer.echo(f"jobs ..................: +{report.jobs_created} criados, "
+               f"~{report.jobs_updated} atualizados, ={report.jobs_unchanged} sem mudanca")
+    typer.echo(f"agendas ...............: +{report.schedules_created} criadas, "
+               f"~{report.schedules_updated} atualizadas")
+    typer.echo(f"versoes de contrato ...: +{report.contract_versions_created}")
+    typer.echo(f"aliases ...............: {report.aliases_upserted}")
+    typer.echo(f"linhas de crontab .....: {report.cron_entries_stored}")
+    typer.echo(f"findings ..............: {report.findings_stored} "
+               f"({report.findings_carried} com explicacao herdada)")
+    typer.echo(f"audit_event ...........: {report.audit_events}")
+    for note in report.notes:
+        typer.echo(f"nota ..................: {note}")
 
 
 @app.command("check-names")
