@@ -11,7 +11,7 @@ Pacote de documentação derivado da *Architecture and Solution Specification �
 
 ## Ordem sugerida de desenvolvimento (Fase 1)
 
-1. `job-catalog` — modelo de dados + seed do inventário (509 entradas)
+1. `job-catalog` — modelo de dados + seed do inventário (597 linhas de job → 527 jobs distintos)
 2. `platform-api` — API REST com Entra ID, tradução para SSH parametrizado
 3. `back-office` — frontend React
 4. `observability` — injeção de `execution_id` nos logs, correlação com auditoria

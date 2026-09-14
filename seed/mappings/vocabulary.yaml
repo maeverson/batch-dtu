@@ -89,7 +89,36 @@ countries:
 #
 # Nenhum código é inventado aqui: adivinhar cliente errado num job de
 # upload_remote é risco de enviar arquivo ao cliente errado.
-clients: {}
+# Nome canônico por código de cliente. Cada entrada é DERIVADA do campo `client`
+# dos contratos, corroborada nos DOIS hosts — PROD e UAT são clones de
+# homologação, então o mesmo código aparecendo com o mesmo nome nos dois é
+# evidência, não coincidência. Contagens de 09/2026 (PROD + UAT).
+clients:
+  alianza_valle: alianza_del_valle   # 3 + 2, unânime
+  ban: banreservas                   # 52 + 50 (grafia `banreserva` 8x é variação)
+  bnp: banco_panama                  # 13 + 32 — ver shared_client_codes
+  coo: coopcentral                   # 17 + 26 — ver shared_client_codes
+  dal: dale                          # 15 + 11, unânime
+  fih: fihogar                       # 4 + 4, unânime
+  mft: mftech                        # 9 + 15, unânime
+  nuvy_sod: sodexo                   # 3 em PROD; ausente de UAT
+  sod: sodexo                        # 28 + 14, unânime
+  stb: servitebca                    # 110 + 71 (grafia `tebca_servitebca` 21x é variação)
+  # Mesma entidade em duas grafias (`bancobogota` / `banco_bogota`), sem
+  # dominante estável entre os hosts. Nome canônico escolhido pela forma legível,
+  # em linha com `banco_panama`. CONFIRMAR com o owner.
+  bbt: banco_bogota
+  # `mas`: nenhum contrato declara `client` — não há de onde derivar.
+  # Só o owner pode dizer. Ver seed/raw/reports/triagem-owners.md.
+
+# Códigos de 3 letras que pertencem legitimamente a MAIS DE UM cliente. Não são
+# erro de contrato: aparecem nos dois hosts com a mesma proporção, e host clonado
+# repetindo o mesmo desvio é convenção, não engano. Declarar aqui evita que a
+# detecção de outlier os acuse a cada reconciliação.
+shared_client_codes:
+  bnp: [banco_panama, banco_nacional_panama]   # 2 + 2
+  tup: [tupanamipana, billet]                  # 1 + 1
+  coo: [coopcentral, cooperativa_29]           # 2 + 3
 
 # Sufixos de nome que indicam variante/experimento e merecem revisão na carga.
 # Não alteram a semântica; entram como `flags` no registro do job.

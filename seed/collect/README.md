@@ -5,10 +5,12 @@ Um script, um artefato. [collect-seed.sh](collect-seed.sh) roda **dentro da sess
 
 | Servidor | Situação |
 |---|---|
-| `srv-sftp-2` (`.novopayment.com`) | **é o host do parque**: `batch_user` com 597 linhas de job, 526 scripts distintos em `/opt2/batch_v2/batch-commons-framework/schedulers/`, contratos em `.../process_files/<cliente>_<país>/`. CentOS 7 ELS, TZ `America/Lima` |
+| `srv-sftp-2` = `Batch-Prod-srv-sftp-2-120` = `172.17.37.120` | **é o host em escopo**: `batch_user` com 597 linhas de job → 527 jobs distintos em `/opt2/batch_v2/batch-commons-framework/schedulers/`, contratos em `.../process_files/<cliente>_<país>/`. CentOS 7 ELS, TZ `America/Lima` |
 | `p-ins-rep-mdw-1` | sem batch: crontab do `batch_user` vazio, só agente ManageEngine e timers de sistema |
 | `uat-sftp-srv-1` | sem batch e sem binário `crontab` no PATH |
-| `com-ins-bch-mdw-dtu-1` | host citado no doc de arquitetura; **não corresponde a nenhum dos coletados** |
+| `com-ins-bch-mdw-dtu-1` | **resolvido em 11/09/2026**: é o hostname do `Batch-DTU`, o host de UAT (linha acima). O doc de arquitetura acertou o hostname e errou o papel — atribuiu a ele o parque de produção, que roda em `srv-sftp-2` / `172.17.37.120` |
+| outros servidores de batch PROD | `p-batch-1` (`172.17.37.66`), `reportes-130` (`172.24.6.130`), `P-MDW-BATCH-1`, `p-mx-batch-1`, `P-MX-SFTP-2` — **têm jobs agendados e estão fora do escopo**; nunca foram coletados |
+| `Batch-DTU` = `com-ins-bch-mdw-dtu-1` = `172.21.86.76` | **host de UAT**, **em escopo** — coletado em 11/09/2026: 540 linhas de job, 587 contratos, Amazon Linux 2023, TZ `America/Bogota`. **Mistura ambientes**: UAT 378, TEST 159, PROD 2, DEV 1 |
 
 > A arquitetura real tem **uma camada a mais** que o doc: o cron chama um wrapper por job
 > (`schedulers/<domínio>/<nome>.sh`) e é **dentro do wrapper** que `main.sh --process-file` aparece.
@@ -120,7 +122,7 @@ Seções do `inventory.txt` (cada uma vira um arquivo no `unpack_bundle.py`):
 |---|---|---|
 | `HOST-INFO` | host, ator, **timezone** (o crontab não declara), uname | campo `timezone` do `job` |
 | `CRONTAB` (uma por fonte) | crontab bruto por usuário + `/etc/crontab` + `/etc/cron.d`, comentários preservados | seed e `status_reason` |
-| `CRON-SUMMARY` | censo por linha: ativas, desabilitadas, prosa, `VAR=`, scripts distintos | conferência 509/390/119 |
+| `CRON-SUMMARY` | censo por linha: ativas, desabilitadas, prosa, `VAR=`, scripts distintos | conferência 393/204/527 |
 | `DOMAIN-CENSUS`, `DOMAIN-DISTINCT-SCRIPTS` | por domínio (`/schedulers/<dom>/`) | `domain` do `job` |
 | `CLIENT-CENSUS`, `CLIENT-DIRS` | por `<cliente>_<país>` (`/process_files/<dir>/`) | `client`/`country` |
 | `WRAPPER-INVOCATION` | **wrapper → flags do `main.sh`** (`--process-file`, `--manual-steps`, `--dates-pattern-files`, `--no-mail`, `--validate-file`) | é o elo cron→contrato e os parâmetros hoje hardcoded |
@@ -155,7 +157,8 @@ Escale ao owner do domínio; não "limpe" o contrato (invariante 1: contratos n�
 ## Conferência imediata
 
 1. `cron-summary.tsv` → `ativas` / `desabilitadas_com_comando` / `scripts_distintos` contra
-   390 / 119 / 509. Em 09/09 no `srv-sftp-2`: **393 / 204 / 526**.
+   **393 / 204 / 527** (baseline do pacote de 10/09/2026 no `srv-sftp-2`). A premissa
+   original era 390 / 119 / 509; a coleta de 09/09 já media 393 / 204 / 526.
 2. `orphan-contracts.txt` e `broken-refs.txt` → contrato sem job e job sem contrato.
 3. `pathology-names.txt` e `case-collisions.txt` → nomes que quebram em migração.
 4. `unresolved-refs.txt` → wrappers que montam o caminho por variável (leitura manual).

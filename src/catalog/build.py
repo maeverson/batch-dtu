@@ -17,6 +17,7 @@ from enum import Enum
 from pathlib import Path
 
 from .cron import CronEntry, EntryKind, parse_crontab
+from .contract_schema import ValidationReport, validate_contract
 from .naming import ProcessName, Vocabulary, parse_process_name
 from .seedpkg import SeedPackage, sha256_file
 from .wrapper import Invocation, WrapperScript, parse_wrapper
@@ -66,6 +67,9 @@ class JobRecord:
     cron_source: str | None
     cron_lineno: int | None
     connection_aliases: tuple[str, ...] = ()
+    # Destino downstream de `upload_remote`/`download_remote`, resolvido pelo
+    # jump SFTP — não é alias local. Para a Fase 3 é o "a quem este job entrega".
+    remote_targets: tuple[str, ...] = ()
     step_functions: tuple[str, ...] = ()
     # Declarado DENTRO do contrato — fonte autoritativa, superior ao nome
     contract_client: str | None = None
@@ -193,7 +197,7 @@ def build_catalog(package: SeedPackage, vocab: Vocabulary) -> BuildResult:
                     "existe em disco e nenhum job agendado o referencia")
         )
 
-    _detect_client_outliers(jobs, findings)
+    _detect_client_outliers(jobs, findings, vocab)
     _detect_undeclared_aliases(jobs, package, findings)
 
     aliases, alias_metadata = _aliases_from_package(package)
@@ -254,6 +258,22 @@ def _job_from_parts(
                     Finding("contrato-json-invalido", Severity.ERROR, contract_ref, facts.error)
                 )
                 flags.append("json-invalido")
+            if facts.validation is not None:
+                # Contrato inválido NÃO bloqueia o import (Policy.LEGACY): o
+                # catálogo registra o parque como ele é. Vira finding para que
+                # a reconciliação cobre a correção.
+                for violation in facts.validation.errors:
+                    findings.append(
+                        Finding("contrato-invalido", Severity.ERROR, contract_ref,
+                                f"{violation.path}: {violation.message}")
+                    )
+                for violation in facts.validation.warnings:
+                    findings.append(
+                        Finding("contrato-com-aviso", Severity.WARNING, contract_ref,
+                                f"{violation.path}: {violation.message}")
+                    )
+                if facts.validation.errors:
+                    flags.append("schema-invalido")
             if facts.schema_version is None and not facts.error:
                 flags.append("sem-schema-version")
             contract_domain = _domain_from_path(contract_ref, "processes")
@@ -320,6 +340,7 @@ def _job_from_parts(
         cron_source=entry.source,
         cron_lineno=entry.lineno,
         connection_aliases=facts.aliases,
+        remote_targets=facts.remote_targets,
         step_functions=facts.functions,
         contract_client=facts.client,
         contract_country=facts.country,
@@ -339,9 +360,24 @@ def _job_from_parts(
 # invariante 1 é uma extensão futura, não o estado atual. Contrato sem ele é
 # registrado como versão de schema nula (legado), nunca como erro.
 #
-# O alias de conexão vive em `server`/`server_remote`. `local` é pseudo-alias
-# de operação local e não é conexão.
-STEP_ALIAS_KEYS = ("server", "server_remote")
+# O alias de conexão vive em `server` — e SÓ nele. Verificado no `main.sh`
+# (09/2026): em `upload_remote`/`download_remote` a conexão é sempre
+# `$SFTP_SERVER_CUSTOMER_UPLOAD` (o alias `sftp_customer_upload`, o jump SFTP),
+# e o `server_remote` é passado como PARÂMETRO para `send_remote_command.sh`
+# nesse jump host:
+#
+#     server=$(jq --arg server "${SFTP_SERVER_CUSTOMER_UPLOAD}" \
+#              '.[] | select(.name==$server)' <<<"${serverVar}")
+#     ... send_remote_command.sh upload '<dir>@${serverName}@...'
+#
+# Ou seja: `server_remote` nomeia o DESTINO downstream conhecido pelo jump host,
+# não uma entrada do connections.json local. Tratá-lo como alias produzia 84
+# falsos `alias-nao-declarado` — 71 deles em jobs ATIVOS de produção que sempre
+# funcionaram. `local` é pseudo-alias de operação local e não é conexão.
+STEP_ALIAS_KEYS = ("server",)
+STEP_REMOTE_TARGET_KEYS = ("server_remote",)
+# Funções cuja conexão real é o jump SFTP, resolvido em runtime pela env var.
+REMOTE_JUMP_FUNCTIONS = frozenset({"upload_remote", "download_remote"})
 PSEUDO_ALIASES = frozenset({"local", "localhost", ""})
 
 
@@ -350,12 +386,17 @@ class ContractFacts:
     schema_version: str | None = None
     steps_count: int | None = None
     aliases: tuple[str, ...] = ()
+    # Destinos downstream de `server_remote`: nomes conhecidos pelo jump host,
+    # não aliases locais. São o cliente final de um `upload_remote`.
+    remote_targets: tuple[str, ...] = ()
     functions: tuple[str, ...] = ()
     client: str | None = None
     country: str | None = None
     environment: str | None = None
     process: str | None = None
     error: str | None = None
+    # Veredito do schema (contract_schema.py). None = contrato não lido.
+    validation: ValidationReport | None = None
 
 
 def _inspect_contract(path: Path) -> ContractFacts:
@@ -374,6 +415,7 @@ def _inspect_contract(path: Path) -> ContractFacts:
     steps = raw_steps if isinstance(raw_steps, list) else []
 
     aliases: list[str] = []
+    remote_targets: list[str] = []
     functions: list[str] = []
     for step in steps:
         if not isinstance(step, dict):
@@ -381,15 +423,19 @@ def _inspect_contract(path: Path) -> ContractFacts:
         function = step.get("function")
         if isinstance(function, str) and function:
             functions.append(function)
-        for key in STEP_ALIAS_KEYS:
-            value = step.get(key)
-            if isinstance(value, str) and value.strip().lower() not in PSEUDO_ALIASES:
-                aliases.append(value.strip())
+        for key, destino in ((STEP_ALIAS_KEYS, aliases),
+                             (STEP_REMOTE_TARGET_KEYS, remote_targets)):
+            for k in key:
+                value = step.get(k)
+                if isinstance(value, str) and value.strip().lower() not in PSEUDO_ALIASES:
+                    destino.append(value.strip())
 
     return ContractFacts(
+        validation=validate_contract(data),
         schema_version=str(data["schema_version"]) if data.get("schema_version") else None,
         steps_count=len(steps),
         aliases=tuple(dict.fromkeys(aliases)),
+        remote_targets=tuple(dict.fromkeys(remote_targets)),
         functions=tuple(dict.fromkeys(functions)),
         client=(data.get("client") or None),
         country=(data.get("country") or None),
@@ -398,7 +444,9 @@ def _inspect_contract(path: Path) -> ContractFacts:
     )
 
 
-def _detect_client_outliers(jobs: list[JobRecord], findings: list[Finding]) -> None:
+def _detect_client_outliers(
+    jobs: list[JobRecord], findings: list[Finding], vocab: Vocabulary | None = None
+) -> None:
     """Código de cliente que quase sempre é um nome e raramente é outro.
 
     O caso real: 110 jobs `stb_*` declaram `servitebca` e UM declara
@@ -423,6 +471,9 @@ def _detect_client_outliers(jobs: list[JobRecord], findings: list[Finding]) -> N
         for nome, poucos in resto:
             if _mesma_familia(nome, dominante):
                 continue  # variação ortográfica do mesmo cliente
+            declarados = (vocab.shared_client_codes.get(code, set()) if vocab else set())
+            if nome.lower() in declarados and dominante.lower() in declarados:
+                continue  # código compartilhado declarado no vocabulário
             if poucos * 10 <= quantos:
                 findings.append(
                     Finding(

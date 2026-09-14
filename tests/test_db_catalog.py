@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import func, select, text
 
-from catalog.build import build_catalog
+from catalog.build import Severity, build_catalog
 from catalog.db.models import (
     AuditEvent,
     ConnectionAlias,
@@ -124,7 +124,11 @@ def resultado(tmp_path):
         "steps": [
             {"step": 1, "function": "download", "stop_on_failed": True, "server": "alias_a"},
             {"step": 2, "function": "upload_remote", "stop_on_failed": False,
-             "server_remote": "alias_ausente"},
+             "server_remote": "cliente_downstream"},
+            # Alias de conexão de verdade (em `server`) e ausente do
+            # connections.json: este é o caso que `alias-nao-declarado` cobre.
+            {"step": 3, "function": "upload", "stop_on_failed": False,
+             "server": "alias_ausente"},
         ],
     }
     (pkg / "framework" / "processes" / "reportes" / "prd_aaa_col_rpt.json").write_text(
@@ -336,3 +340,341 @@ def test_modelo_e_migration_nao_divergem(engine):
         if "alembic_version" not in str(d) and "'public'" not in str(d)
     ]
     assert not relevantes, f"modelo e banco divergem: {relevantes}"
+
+
+# =============================================================================
+# Reconciliação crontab × catálogo (SPEC requisito 5)
+#
+# O que estes testes travam: reconciliar LÊ o catálogo e não o altera. Se o job
+# de diff pudesse escrever, ele consertaria a divergência que deveria reportar —
+# e o relatório nunca acusaria nada.
+# =============================================================================
+
+FW = "/opt2/batch_v2/batch-commons-framework"
+
+CONTRATO_BASE = {
+    "name_process": "reportes",
+    "client": "cliente_a",
+    "country": "colombia",
+    "environment": "prd",
+    "description": "relatorio diario",
+    "send_infra_mail": "BOTH",
+    "steps": [
+        {"step": 1, "function": "download", "stop_on_failed": True, "server": "alias_a",
+         "files": [{"file_name": "rpt_@@@YYYYMMDD@@@.txt", "remote_path": "/out",
+                    "local_path": "."}]},
+    ],
+}
+
+
+def _pacote(raiz: Path, *, crontab: str, contrato: dict | None = None,
+            nome: str = "prd_aaa_col_rpt", host: str = "teste"):
+    """Pacote de coleta sintético, parametrizável — a base de todo diff."""
+    pkg = raiz / "batch-seed-teste-20260910T000000Z"
+    (pkg / "framework" / "processes" / "reportes").mkdir(parents=True, exist_ok=True)
+    (pkg / "framework" / "schedulers" / "reportes").mkdir(parents=True, exist_ok=True)
+
+    (pkg / "framework" / "processes" / "reportes" / f"{nome}.json").write_text(
+        json.dumps(contrato if contrato is not None else CONTRATO_BASE), encoding="utf-8"
+    )
+    (pkg / "framework" / "schedulers" / "reportes" / f"{nome}.sh").write_text(
+        f"#!/bin/bash\n{FW}/main.sh --process-file {FW}/processes/reportes/{nome}.json --no-mail\n",
+        encoding="utf-8",
+    )
+
+    inventory = f"""
+##### BEGIN HOST-INFO
+hostname_short\t{host}
+collected_at_utc\t20260910T000000Z
+collected_by\troot
+etc_localtime\t/usr/share/zoneinfo/America/Lima
+collector\tcollect-seed.sh 2.0.1
+##### END HOST-INFO
+
+##### BEGIN DETECTED-PATHS
+framework_root\t{FW}
+schedulers_dir\t{FW}/schedulers
+processes_dir\t{FW}/processes
+##### END DETECTED-PATHS
+
+##### BEGIN CRONTAB | user=batch_user | source=/var/spool/cron/batch_user
+{crontab.strip()}
+##### END CRONTAB
+
+##### BEGIN CONNECTION-ALIASES | path={FW}/connections/connections.json
+alias_a\tSFTP\t172.17.37.90\tuser_a\t\t\tkey\t/home/batch_user/.ssh/id_rsa\tname,host
+##### END CONNECTION-ALIASES
+"""
+    (pkg / "inventory.txt").write_text(inventory.strip() + "\n", encoding="utf-8")
+    return build_catalog(SeedPackage(pkg), Vocabulary.load())
+
+
+CRON_BASE = f"00 02 * * * {FW}/schedulers/reportes/prd_aaa_col_rpt.sh >> {FW}/logs/x.log"
+
+
+@pytest.fixture()
+def catalogado(session, tmp_path):
+    """Catálogo já carregado e em dia com a coleta."""
+    resultado = _pacote(tmp_path / "carga", crontab=CRON_BASE)
+    load_catalog(resultado, session, actor="carga@dev")
+    session.commit()
+    return resultado
+
+
+def _tipos(report):
+    return {d.kind for d in report.divergences}
+
+
+def test_reconcile_em_dia_nao_acusa_divergencia_estrutural(catalogado, session, tmp_path):
+    from catalog.db.reconcile import reconcile
+
+    report = reconcile(_pacote(tmp_path / "b", crontab=CRON_BASE), session, actor="recon")
+    session.commit()
+
+    estruturais = _tipos(report) & {
+        "job-fantasma", "job-sem-entrada-no-crontab",
+        "agenda-divergente", "contrato-divergente", "metadado-divergente",
+    }
+    assert estruturais == set()
+    assert report.jobs_in_catalog == report.jobs_in_crontab == 1
+
+
+def test_reconcile_nao_escreve_catalogo(catalogado, session, tmp_path):
+    """O diff é leitura. Se escrevesse, consertaria o que deveria reportar."""
+    from catalog.db.reconcile import reconcile
+
+    outro = f"{CRON_BASE}\n30 05 * * * {FW}/schedulers/reportes/prd_bbb_col_rpt.sh >> {FW}/logs/y.log"
+    antes_jobs = session.scalar(select(func.count()).select_from(Job))
+    antes_versoes = session.scalar(select(func.count()).select_from(JobContractVersion))
+
+    reconcile(_pacote(tmp_path / "b", crontab=outro), session, actor="recon")
+    session.commit()
+
+    assert session.scalar(select(func.count()).select_from(Job)) == antes_jobs
+    assert session.scalar(select(func.count()).select_from(JobContractVersion)) == antes_versoes
+
+
+def test_job_fantasma_e_erro_quando_ativo(catalogado, session, tmp_path):
+    """Crontab agenda o que o catálogo não conhece: execução fora de governança."""
+    from catalog.db.reconcile import reconcile
+
+    novo = f"{CRON_BASE}\n30 05 * * * {FW}/schedulers/reportes/prd_bbb_col_rpt.sh >> {FW}/logs/y.log"
+    report = reconcile(_pacote(tmp_path / "b", crontab=novo), session, actor="recon")
+    session.commit()
+
+    fantasmas = [d for d in report.divergences if d.kind == "job-fantasma"]
+    assert len(fantasmas) == 1
+    assert fantasmas[0].severity is Severity.ERROR
+    assert report.open_errors >= 1
+
+
+def test_job_do_catalogo_ausente_da_coleta(catalogado, session, tmp_path):
+    from catalog.db.reconcile import reconcile
+
+    vazio = f"# nada agendado\n00 03 * * * {FW}/clean_logs.sh"
+    report = reconcile(_pacote(tmp_path / "b", crontab=vazio), session, actor="recon")
+    session.commit()
+
+    ausentes = [d for d in report.divergences if d.kind == "job-sem-entrada-no-crontab"]
+    assert len(ausentes) == 1
+    assert ausentes[0].severity is Severity.ERROR   # estava ativo no catálogo
+
+
+def test_agenda_editada_a_mao_e_divergencia(catalogado, session, tmp_path):
+    from catalog.db.reconcile import reconcile
+
+    mudou = CRON_BASE.replace("00 02", "45 23")
+    report = reconcile(_pacote(tmp_path / "b", crontab=mudou), session, actor="recon")
+    session.commit()
+
+    agendas = [d for d in report.divergences if d.kind == "agenda-divergente"]
+    assert agendas and any("schedule_expr" in d.detail for d in agendas)
+
+
+def test_contrato_alterado_em_disco_e_divergencia(catalogado, session, tmp_path):
+    """Contrato mudou sem passar pela plataforma — o hash denuncia."""
+    from catalog.db.reconcile import reconcile
+
+    alterado = json.loads(json.dumps(CONTRATO_BASE))
+    alterado["steps"].append({
+        "step": 2, "function": "upload_remote", "stop_on_failed": False,
+        "server_remote": "cliente_externo", "files": [{"file_name": "x.txt"}],
+    })
+    report = reconcile(
+        _pacote(tmp_path / "b", crontab=CRON_BASE, contrato=alterado), session, actor="recon"
+    )
+    session.commit()
+
+    contratos = [d for d in report.divergences if d.kind == "contrato-divergente"]
+    assert len(contratos) == 1
+    assert contratos[0].severity is Severity.ERROR
+
+
+def test_reconcile_gera_run_findings_e_auditoria(catalogado, session, tmp_path):
+    from catalog.db.reconcile import reconcile
+
+    novo = f"{CRON_BASE}\n30 05 * * * {FW}/schedulers/reportes/prd_bbb_col_rpt.sh >> {FW}/logs/y.log"
+    antes = session.scalar(select(func.count()).select_from(AuditEvent))
+    report = reconcile(_pacote(tmp_path / "b", crontab=novo), session, actor="recon@dev")
+    session.commit()
+
+    assert report.run_id is not None
+    assert report.divergences
+    gravados = session.scalar(
+        select(func.count()).select_from(ReconciliationFinding)
+        .where(ReconciliationFinding.run_id == report.run_id)
+    )
+    assert gravados == len(report.divergences)
+
+    # `audit_event` é append-only e não é truncado entre testes: o filtro é
+    # pelo ator deste teste, não pela contagem global.
+    evento = session.scalars(
+        select(AuditEvent).where(AuditEvent.action == "catalog.reconcile",
+                                 AuditEvent.actor == "recon@dev")
+    ).all()
+    assert len(evento) == 1
+    assert evento[0].payload["run_id"] == report.run_id
+    assert session.scalar(select(func.count()).select_from(AuditEvent)) > antes
+
+
+def test_dry_run_nao_persiste_run(catalogado, session, tmp_path):
+    from catalog.db.reconcile import reconcile
+
+    antes = session.scalar(select(func.count()).select_from(ReconciliationFinding))
+    report = reconcile(
+        _pacote(tmp_path / "b", crontab=CRON_BASE), session, actor="recon", dry_run=True
+    )
+    session.commit()
+
+    assert report.run_id is None
+    assert session.scalar(select(func.count()).select_from(ReconciliationFinding)) == antes
+
+
+def test_explicacao_sobrevive_ao_proximo_run(catalogado, session, tmp_path):
+    """Critério de aceite da fase é 'sem divergência NÃO EXPLICADA' — logo a
+    explicação tem de atravessar runs, senão o critério é inatingível."""
+    from catalog.db.reconcile import explain_finding, reconcile
+
+    novo = f"{CRON_BASE}\n30 05 * * * {FW}/schedulers/reportes/prd_bbb_col_rpt.sh >> {FW}/logs/y.log"
+    primeiro = reconcile(_pacote(tmp_path / "b", crontab=novo), session, actor="recon")
+    session.commit()
+    assert primeiro.open_errors >= 1
+
+    fantasma = session.scalars(
+        select(ReconciliationFinding)
+        .where(ReconciliationFinding.run_id == primeiro.run_id,
+               ReconciliationFinding.kind == "job-fantasma")
+    ).one()
+    total = explain_finding(session, fantasma.fingerprint,
+                            explanation="job novo, entra no catalogo na CDPP-1",
+                            actor="eu@dev")
+    session.commit()
+    assert total == 1
+
+    segundo = reconcile(_pacote(tmp_path / "c", crontab=novo), session, actor="recon")
+    session.commit()
+
+    herdada = session.scalars(
+        select(ReconciliationFinding)
+        .where(ReconciliationFinding.run_id == segundo.run_id,
+               ReconciliationFinding.kind == "job-fantasma")
+    ).one()
+    assert herdada.status == "explained"
+    assert herdada.explained_by == "eu@dev"
+    assert segundo.explained_count >= 1
+
+
+def test_explicar_e_auditado(catalogado, session, tmp_path):
+    from catalog.db.reconcile import explain_finding, reconcile
+
+    novo = f"{CRON_BASE}\n30 05 * * * {FW}/schedulers/reportes/prd_bbb_col_rpt.sh >> {FW}/logs/y.log"
+    report = reconcile(_pacote(tmp_path / "b", crontab=novo), session, actor="recon")
+    session.commit()
+    alvo = session.scalars(
+        select(ReconciliationFinding).where(ReconciliationFinding.run_id == report.run_id)
+    ).first()
+
+    explain_finding(session, alvo.fingerprint, explanation="conhecido", actor="explica@dev")
+    session.commit()
+
+    evento = session.scalars(
+        select(AuditEvent).where(AuditEvent.action == "reconciliation.finding.explain",
+                                 AuditEvent.actor == "explica@dev")
+    ).one()
+    assert evento.actor == "explica@dev"
+    assert evento.payload["explanation"] == "conhecido"
+
+
+# --- veredito do schema persistido junto da versão ---------------------------
+
+def test_versao_de_contrato_guarda_o_veredito(session, tmp_path):
+    resultado = _pacote(tmp_path / "carga", crontab=CRON_BASE)
+    load_catalog(resultado, session, actor="carga@dev")
+    session.commit()
+
+    versao = session.scalar(select(JobContractVersion))
+    assert versao.validation_status == "valid"
+    assert versao.validation["schema_revision"]
+    assert versao.validation["violations"] == []
+
+
+def test_contrato_invalido_entra_no_catalogo_sob_politica_legacy(session, tmp_path):
+    """O catálogo registra o parque como ele é — inclusive o que está quebrado."""
+    quebrado = json.loads(json.dumps(CONTRATO_BASE))
+    quebrado["steps"][0].pop("server")          # download sem servidor: não executa
+
+    resultado = _pacote(tmp_path / "carga", crontab=CRON_BASE, contrato=quebrado)
+    report = load_catalog(resultado, session, actor="carga@dev")
+    session.commit()
+
+    assert report.jobs_created == 1
+    assert report.contracts_invalid == 1
+    versao = session.scalar(select(JobContractVersion))
+    assert versao.validation_status == "invalid"
+    assert versao.validation["violations"]
+
+
+def test_politica_strict_aborta_a_carga(session, tmp_path):
+    from catalog.contract_schema import ContractInvalid, Policy
+
+    quebrado = json.loads(json.dumps(CONTRATO_BASE))
+    quebrado["steps"][0].pop("server")
+    resultado = _pacote(tmp_path / "carga", crontab=CRON_BASE, contrato=quebrado)
+
+    with pytest.raises(ContractInvalid):
+        load_catalog(resultado, session, actor="carga@dev", policy=Policy.STRICT)
+    session.rollback()
+
+    assert session.scalar(select(func.count()).select_from(Job)) == 0
+
+
+def test_reconciliar_um_host_nao_acusa_os_jobs_do_outro(catalogado, session, tmp_path):
+    """Dois hosts convivem no mesmo catálogo (PROD e UAT entram juntos na Fase 1).
+
+    A coleta é sempre de UM host, então reconciliar UAT não pode concluir que os
+    jobs de PROD sumiram do crontab — seria um relatório de 527 divergências
+    falsas a cada execução, e o critério "sem divergência não explicada" viraria
+    ruído permanente.
+    """
+    from catalog.db.reconcile import reconcile
+
+    # `catalogado` já carregou o host `teste`. Agora entra um segundo host.
+    uat = _pacote(
+        tmp_path / "uat",
+        crontab=f"15 04 * * * {FW}/schedulers/reportes/uat_bbb_col_rpt.sh >> {FW}/logs/u.log",
+        contrato={**CONTRATO_BASE, "environment": "uat"},
+        nome="uat_bbb_col_rpt", host="batch-dtu",
+    )
+    load_catalog(uat, session, actor="carga@dev")
+    session.commit()
+
+    assert {j.host for j in session.scalars(select(Job))} == {"teste", "batch-dtu"}
+    assert {j.environment for j in session.scalars(select(Job))} == {"PROD", "UAT"}
+
+    # Reconciliar só o host de UAT: o job de PROD não é problema de UAT.
+    report = reconcile(uat, session, actor="recon")
+    session.commit()
+
+    assert report.jobs_in_catalog == 1          # só os do host reconciliado
+    assert not [d for d in report.divergences if d.kind == "job-sem-entrada-no-crontab"]
+    assert not [d for d in report.divergences if d.kind == "job-fantasma"]

@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..build import BuildResult, JobRecord
+from ..contract_schema import Policy, assert_valid
 from .models import (
     AuditEvent,
     ConnectionAlias,
@@ -66,6 +67,7 @@ class LoadReport:
     schedules_created: int = 0
     schedules_updated: int = 0
     contract_versions_created: int = 0
+    contracts_invalid: int = 0
     aliases_upserted: int = 0
     cron_entries_stored: int = 0
     findings_stored: int = 0
@@ -84,8 +86,15 @@ def load_catalog(
     source: str = "cli",
     dry_run: bool = False,
     bundle_sha256: str | None = None,
+    policy: Policy = Policy.LEGACY,
 ) -> LoadReport:
-    """Carrega o resultado do build no catálogo. Uma transação, um relatório."""
+    """Carrega o resultado do build no catálogo. Uma transação, um relatório.
+
+    `policy` decide o que fazer com contrato que falha no schema. O default é
+    `LEGACY` porque o import do parque tem de conseguir registrar o que existe
+    — inclusive o que está quebrado. `STRICT` levanta `ContractInvalid` e
+    aborta a transação inteira; é a política da escrita nova.
+    """
     report = LoadReport(host=result.host, dry_run=dry_run)
     now = datetime.now(timezone.utc)
 
@@ -94,7 +103,8 @@ def load_catalog(
 
     grouped = _group_jobs(result)
     for (wrapper_path, contract_path), records in grouped.items():
-        _persist_job(result, session, report, actor, source, now, wrapper_path, contract_path, records)
+        _persist_job(result, session, report, actor, source, now,
+                     wrapper_path, contract_path, records, policy)
 
     _store_reconciliation(result, session, report, snapshot, actor, now)
 
@@ -109,6 +119,8 @@ def load_catalog(
             "jobs_created": report.jobs_created,
             "jobs_updated": report.jobs_updated,
             "contract_versions_created": report.contract_versions_created,
+            "contracts_invalid": report.contracts_invalid,
+            "validation_policy": policy.value,
             "findings": len(result.findings),
             "dry_run": dry_run,
         },
@@ -263,6 +275,7 @@ def _persist_job(
     wrapper_path: str | None,
     contract_path: str | None,
     records: list[JobRecord],
+    policy: Policy = Policy.LEGACY,
 ) -> None:
     reference = records[0]
     desired = {
@@ -324,7 +337,7 @@ def _persist_job(
         else:
             report.jobs_unchanged += 1
 
-    _persist_contract_version(result, session, report, job, reference, actor, source, now)
+    _persist_contract_version(result, session, report, job, reference, actor, source, now, policy)
     _persist_schedules(session, report, job, records, result, actor, source, now)
     _persist_aliases_of_job(session, job, records, result)
 
@@ -348,6 +361,7 @@ def _persist_contract_version(
     actor: str,
     source: str,
     now: datetime,
+    policy: Policy = Policy.LEGACY,
 ) -> None:
     if not reference.contract_path or not reference.contract_hash:
         return
@@ -365,6 +379,13 @@ def _persist_contract_version(
 
     local = result.contracts.get(reference.contract_path)
     contract = _read_contract(local)
+
+    # Validação NA ESCRITA: acontece antes da versão existir, e o veredito é
+    # gravado junto dela. Sob STRICT isto levanta e a transação inteira cai.
+    validation = assert_valid(contract, policy)
+    if not validation.valid:
+        report.contracts_invalid += 1
+
     last = session.scalar(
         select(JobContractVersion.version)
         .where(JobContractVersion.job_id == job.id)
@@ -381,6 +402,8 @@ def _persist_contract_version(
         steps_count=reference.steps_count,
         source="seed" if last is None else "import",
         created_by=actor,
+        validation_status=validation.status,
+        validation=validation.as_dict(),
     )
     session.add(version)
     session.flush()
@@ -394,6 +417,8 @@ def _persist_contract_version(
             "contract_hash": version.contract_hash,
             "schema_version": version.schema_version,
             "steps": version.steps_count,
+            "validation_status": version.validation_status,
+            "violations": len(validation.violations),
         },
         occurred_at=now,
     )

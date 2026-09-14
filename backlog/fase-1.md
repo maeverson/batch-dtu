@@ -6,7 +6,7 @@
 
 | Capacidade | Detalhe |
 |---|---|
-| Catálogo | Import do inventário (509 entradas) como seed; busca/filtro por domínio, cliente, ambiente, status |
+| Catálogo | Import do inventário (597 linhas de job → 527 jobs) como seed; busca/filtro por domínio, cliente, ambiente, status |
 | Execução manual | Dispara `main.sh --process-file X --manual-steps Y --dates-pattern-files Z`, com pré-validação (`--validate-file`) e confirmação explícita de data-alvo |
 | Reprocesso multi-data | Formaliza o laço sequencial do SOP Zinli: API serializa datas e impede concorrência por processo |
 | Monitoramento | Status de execução + streaming de logs (consultas Loki por `execution_id`/arquivo) |

@@ -30,6 +30,10 @@ class Vocabulary:
         self.clients: dict[str, str] = {k.lower(): v for k, v in (data.get("clients") or {}).items()}
         self.domains: dict[str, list[str]] = {k: [a.lower() for a in v] for k, v in (data.get("domains") or {}).items()}
         self.variant_suffixes: set[str] = {s.lower() for s in (data.get("variant_suffixes") or [])}
+        self.shared_client_codes: dict[str, set[str]] = {
+            k.lower(): {n.lower() for n in v}
+            for k, v in (data.get("shared_client_codes") or {}).items()
+        }
 
     @classmethod
     def load(cls, path: Path | None = None) -> Vocabulary:

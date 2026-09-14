@@ -90,7 +90,7 @@ def render_markdown(result: BuildResult) -> str:
     curated = sum(1 for j in result.jobs if j.client_name)
     w(f"Códigos de cliente distintos: **{len(clients)}** — "
       f"curados no vocabulário: **{curated}** de {len(result.jobs)} jobs. "
-      "Os não curados aparecem em `clients.todo.yaml`.")
+      f"Os não curados aparecem em `clients.todo-{result.host}.yaml`.")
     w("")
 
     # -- achados -------------------------------------------------------------

@@ -13,7 +13,7 @@ Banco relacional gerenciado (default: RDS PostgreSQL — ver ADR-003). Retençã
 | `status` + `reason` | ativo/desabilitado com motivo registrado (substitui comentários do crontab) |
 | `criticality`, `sla`, `owner` | Base para alertas de atraso/ausência (Fase 3) |
 
-Seed inicial = inventário consolidado (509 entradas). **Substitui o crontab como fonte da verdade.**
+Seed inicial = inventário consolidado (597 linhas de job → 527 jobs distintos). **Substitui o crontab como fonte da verdade.**
 
 ## `execution`
 

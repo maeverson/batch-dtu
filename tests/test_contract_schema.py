@@ -55,9 +55,18 @@ def test_le_funcoes_dos_steps(contrato):
     assert facts.functions == ("download", "copy_local", "upload_remote", "encrypt")
 
 
-def test_alias_vem_de_server_e_server_remote(contrato):
+def test_alias_de_conexao_vem_so_de_server(contrato):
+    """`server_remote` NÃO é alias local — verificado no `main.sh` de 09/2026.
+
+    Em `upload_remote`/`download_remote` a conexão é sempre
+    `$SFTP_SERVER_CUSTOMER_UPLOAD` (o jump SFTP); o `server_remote` viaja como
+    parâmetro para `send_remote_command.sh` NO jump host, nomeando o destino
+    downstream. Tratá-lo como alias gerava 84 falsos `alias-nao-declarado`,
+    71 deles em jobs ativos de produção que sempre funcionaram.
+    """
     facts = _inspect_contract(contrato)
-    assert facts.aliases == ("novo_37_90", "cliente_externo_1")
+    assert facts.aliases == ("novo_37_90",)
+    assert facts.remote_targets == ("cliente_externo_1",)
 
 
 def test_pseudo_alias_local_nao_e_conexao(contrato):

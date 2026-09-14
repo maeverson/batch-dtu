@@ -1,6 +1,6 @@
 # Fase 2 — API de Execução/Orchestrator + Remoção da Dependência de Servidor
 
-**Objetivo**: substituir cron + `main.sh` por scheduler gerenciado + executor containerizado, mantendo intactos o contrato JSON e a API da Fase 1, e descomissionar os hosts `com-ins-bch-mdw-dtu-1` e `Batch-Prod-srv-sftp2-120`.
+**Objetivo**: substituir cron + `main.sh` por scheduler gerenciado + executor containerizado, mantendo intactos o contrato JSON e a API da Fase 1, e descomissionar o host `Batch-Prod-srv-sftp-2-120` (`172.17.37.120`).
 
 ## Entregas técnicas
 

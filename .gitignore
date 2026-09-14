@@ -3,6 +3,12 @@
 seed/raw/*
 !seed/raw/.gitkeep
 
+# Pacote de coleta solto, em QUALQUER diretório (o coletor entrega um .tar.gz;
+# o lugar dele é seed/raw/, mas cópias aparecem onde a coleta foi baixada).
+batch-seed-*
+batch-inventory-*
+*.tar.gz
+
 # Python
 __pycache__/
 *.pyc

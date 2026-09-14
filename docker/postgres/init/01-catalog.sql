@@ -19,6 +19,13 @@ CREATE ROLE batch_migrator LOGIN PASSWORD 'batch_migrator_dev';
 
 GRANT CONNECT ON DATABASE batch_catalog TO batch_app, batch_readonly, batch_migrator;
 
+-- CREATE no banco para a role das migrations: `CREATE SCHEMA IF NOT EXISTS`
+-- exige o privilégio mesmo quando o schema já existe, e a migration precisa
+-- bastar por si em banco novo. Sem isto o `alembic upgrade` falha em
+-- `batch_catalog` (que pertence ao superusuário) e só funciona no banco de
+-- teste, de que `batch_migrator` é dono.
+GRANT CREATE ON DATABASE batch_catalog TO batch_migrator;
+
 \connect batch_catalog
 
 CREATE SCHEMA IF NOT EXISTS catalog AUTHORIZATION batch_migrator;

@@ -13,18 +13,34 @@ Plano incremental de desenvolvimento. Cada etapa entrega valor verificável e de
 Fundação de tudo: catálogo como fonte da verdade.
 
 - [ ] Modelo de dados (`job`, `execution`, `audit_event`, `connection_alias`) — ver `docs/modelo-de-dados.md`
-- [ ] Migrations e banco (ADR-003: default RDS PostgreSQL)
-- [ ] Importador/seed do inventário (509 entradas, com `status_reason` dos comentários do crontab)
-- [ ] Validação de schema do contrato JSON na escrita
-- [ ] Versionamento de contrato e metadados
-- [ ] Job de reconciliação crontab × catálogo (diff report)
+  - [x] `job` (+ `job_schedule`, `job_contract_version`, `job_revision`, `job_connection_alias`), `audit_event`, `connection_alias`, `crontab_snapshot`/`crontab_entry`, `reconciliation_run`/`reconciliation_finding`
+  - [ ] `execution` — sem fonte na Fase 1 enquanto o cron executa; nasce com o `ExecutionBackend` da Etapa 1.2
+- [x] Migrations e banco (ADR-003: default RDS PostgreSQL) — Alembic; append-only de auditoria por trigger + REVOKE, com teste de drift modelo × migration
+- [x] Importador/seed do inventário, com `status_reason` dos comentários do crontab — `catalog import` (relatório) e `catalog load` (persistência idempotente).
+  **A coleta de 09/2026 mediu 597 linhas de job (393 ativas, 204 desabilitadas), consolidadas em 527 jobs distintos**, não as 509 entradas da premissa inicial. O crontab tem 1352 linhas ao todo: 597 de job, 317 de manutenção, o resto prosa, `VAR=` e branco
+- [x] Validação de schema do contrato JSON na escrita — `src/catalog/contract_schema.py`, veredito gravado em `job_contract_version.validation_status`; `catalog validate` valida em lote
+- [x] Versionamento de contrato e metadados — `job_contract_version` (append-only, por hash) e `job_revision` (snapshot + diff do que mudou). Consulta hoje é SQL; endpoint vem na Etapa 1.2
+- [x] Job de reconciliação crontab × catálogo (diff report) — `catalog reconcile` (leitura pura, grava `reconciliation_run`) + `catalog explain` para fechar divergência conhecida
+- [x] **Coleta, import e carga do host de UAT** (`Batch-DTU` / `com-ins-bch-mdw-dtu-1`, `172.21.86.76`)
+  - [x] Coleta (11/09/2026) e `catalog import` — 540 linhas de job, 587 contratos, **21 erros / 22 avisos**. Relatório em `seed/raw/reports/import-com-ins-bch-mdw-dtu-1.md`
+  - [x] Curadoria de cliente — **540/540 jobs curados**. Nomes derivados do campo `client` dos contratos e corroborados nos dois hosts (PROD e UAT são clones de homologação), não adivinhados. Resta `mas` em PROD (1 job), sem `client` em nenhum contrato: só o owner resolve
+  - [x] Códigos legitimamente compartilhados declarados em `shared_client_codes` (`bnp`, `tup`, `coo`) — repetem-se nos dois clones na mesma proporção, logo são convenção e não erro de contrato
+  - [x] `catalog load` do host de UAT — 519 jobs, 540 agendas, 507 versões de contrato, 833 linhas de crontab, 1031 `audit_event`
 
-**Entrega verificável**: inventário consultável via banco, reconciliação sem divergências não explicadas.
+**Entrega verificável**:
+
+- [x] Inventário consultável via banco — **1046 jobs** dos dois hosts (`srv-sftp-2` 527 PROD;
+  `com-ins-bch-mdw-dtu-1` 365 UAT + 151 TEST + 2 PROD + 1 DEV), 1137 agendas, 1025 versões de
+  contrato, 2185 linhas de crontab preservadas, 2859 eventos de auditoria. Reconciliação bate
+  1:1 nos dois hosts, com zero divergência estrutural.
+- [ ] Reconciliação sem divergências não explicadas — **27 erros abertos** (PROD 6, UAT 21).
+  Dependem de decisão de owner; ver `seed/raw/reports/triagem-owners.md` e feche cada um com
+  `catalog explain`.
 **Desbloqueia**: `platform-api` (bloqueante — a API lê/escreve o catálogo).
 
 ### Etapa 1.2 — `platform-api`
 
-- [ ] Autenticação Entra ID (OIDC) + RBAC (`batch.viewer/operator/operator-prod/admin`) com escopo domínio/ambiente
+- [ ] Autenticação Entra ID (OIDC) + RBAC (`batch.viewer/operator/operator-prod/admin`) com escopo domínio/ambiente — com UAT no catálogo, `operator-prod` passa a ter contraparte real e a distinção deixa de ser teórica
 - [ ] Interface `ExecutionBackend` + implementação Fase 1 (SSH parametrizado via `backoffice_svc` + wrapper `command=`)
 - [ ] Endpoints de catálogo (busca/filtro, validação, enable/disable com reason)
 - [ ] Endpoint de execução manual (steps, dates_pattern, pré-validação, confirmação de data-alvo)
@@ -52,7 +68,7 @@ Fundação de tudo: catálogo como fonte da verdade.
 
 ### 🏁 Marco de conclusão da Fase 1
 
-- [ ] Reprocessamento **Zinli/MFTech executado fim-a-fim via Back Office**
+- [ ] Reprocessamento **Zinli/MFTech executado fim-a-fim via Back Office** — **ensaiado antes em UAT** (`172.21.86.76`): steps `upload_remote` não estreiam contra cliente real
 - [ ] Zero execuções manuais via SSH fora do break-glass (auditoria sshd × plataforma)
 - [ ] 100% das execuções manuais com registro de auditoria
 
@@ -114,7 +130,7 @@ Sequência fixa (menor → maior risco), com critérios de cutover por job em `d
 
 - [ ] 100% dos jobs ativos agendados fora do crontab
 - [ ] Execução reproduzível de qualquer worker
-- [ ] Hosts `com-ins-bch-mdw-dtu-1` e `Batch-Prod-srv-sftp2-120` desligados ou reduzidos a jump hosts finos
+- [ ] Host `Batch-Prod-srv-sftp-2-120` (`172.17.37.120`) desligado ou reduzido a jump host fino
 - [ ] RTO validado em drill de disaster recovery
 
 ---

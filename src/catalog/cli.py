@@ -44,8 +44,10 @@ def import_package(
     report_path.write_text(render_markdown(result), encoding="utf-8")
     write_jobs_csv(result, out / f"jobs-{stem}.csv")
     write_findings_csv(result, out / f"findings-{stem}.csv")
-    write_clients_todo(result, out / "clients.todo.yaml")
-    write_clients_mapping(result, out / "clients.derived.yaml")
+    # Por host, como os demais: com dois hosts em escopo (PROD e UAT), nome fixo
+    # fazia o segundo import sobrescrever a curadoria do primeiro em silêncio.
+    write_clients_todo(result, out / f"clients.todo-{stem}.yaml")
+    write_clients_mapping(result, out / f"clients.derived-{stem}.yaml")
 
     errors = sum(1 for f in result.findings if f.severity is Severity.ERROR)
     warnings = sum(1 for f in result.findings if f.severity is Severity.WARNING)
@@ -108,6 +110,115 @@ def load(
     typer.echo(f"audit_event ...........: {report.audit_events}")
     for note in report.notes:
         typer.echo(f"nota ..................: {note}")
+
+
+@app.command("reconcile")
+def reconcile_command(
+    package: Path = typer.Argument(..., help="Diretório do pacote de coleta FRESCO do host"),
+    vocabulary: Path | None = typer.Option(None, "--vocabulary"),
+    actor: str = typer.Option("system", "--actor", help="Ator registrado na auditoria"),
+    role: str = typer.Option("app", "--role", help="Papel de conexão: app | migrations | test"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Simula e reverte a transação"),
+    out: Path | None = typer.Option(None, "--out", help="Grava o relatório de divergências em CSV"),
+    fail_on_open: bool = typer.Option(
+        True, "--fail-on-open/--no-fail-on-open",
+        help="Sai com código 1 se houver divergência ABERTA de severidade erro",
+    ),
+) -> None:
+    """Reconcilia crontab × catálogo. Não escreve catálogo — só o run de diff."""
+    from .db.reconcile import reconcile
+    from .db.session import session_scope
+
+    pkg = SeedPackage(package)
+    vocab = Vocabulary.load(vocabulary)
+    result = build_catalog(pkg, vocab)
+
+    with session_scope(role) as session:
+        report = reconcile(result, session, actor=actor, source="cli", dry_run=dry_run)
+        divergences = list(report.divergences)
+
+    typer.echo(f"host ..................: {report.host}")
+    if dry_run:
+        typer.echo("MODO ..................: dry-run (nada persistido)")
+    typer.echo(f"run ...................: {report.run_id or '-'}")
+    typer.echo(f"jobs no catalogo ......: {report.jobs_in_catalog}")
+    typer.echo(f"jobs na coleta ........: {report.jobs_in_crontab}")
+    typer.echo(f"divergencias ..........: {len(divergences)} "
+               f"({report.open_count} abertas, {report.explained_count} explicadas)")
+    for kind, total in sorted(report.by_kind.items(), key=lambda kv: -kv[1]):
+        typer.echo(f"  {kind:.<34} {total}")
+    typer.echo(f"abertas com severidade erro: {report.open_errors}")
+
+    if out is not None:
+        import csv
+
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["severidade", "tipo", "sujeito", "detalhe"])
+            for d in divergences:
+                writer.writerow([d.severity.value, d.kind, d.subject, d.detail])
+        typer.echo(f"relatorio .............: {out}")
+
+    if fail_on_open and report.open_errors:
+        raise typer.Exit(code=1)
+
+
+@app.command("explain")
+def explain_command(
+    fingerprint: str = typer.Argument(..., help="Fingerprint da divergência (sha256)"),
+    reason: str = typer.Option(..., "--reason", help="Por que esta divergência é aceitável"),
+    actor: str = typer.Option(..., "--actor", help="Quem assume a explicação"),
+    role: str = typer.Option("app", "--role"),
+) -> None:
+    """Marca uma divergência como explicada. A explicação sobrevive aos runs."""
+    from .db.reconcile import explain_finding
+    from .db.session import session_scope
+
+    with session_scope(role) as session:
+        total = explain_finding(session, fingerprint, explanation=reason,
+                                actor=actor, source="cli")
+
+    if not total:
+        typer.echo(f"nenhuma divergencia com fingerprint {fingerprint}")
+        raise typer.Exit(code=1)
+    typer.echo(f"explicadas ............: {total} ocorrencia(s)")
+
+
+@app.command("validate")
+def validate_command(
+    target: Path = typer.Argument(..., help="Contrato JSON ou diretório de contratos"),
+    strict: bool = typer.Option(
+        False, "--strict",
+        help="Política de escrita nova: qualquer erro faz o comando falhar",
+    ),
+) -> None:
+    """Valida contrato(s) contra o schema — o mesmo validador da escrita."""
+    import json
+
+    from .contract_schema import validate_contract
+
+    paths = sorted(target.rglob("*.json")) if target.is_dir() else [target]
+    invalid = 0
+    for path in paths:
+        try:
+            contract = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        except json.JSONDecodeError as exc:
+            invalid += 1
+            typer.echo(f"{path.name}	json-invalido	{exc}")
+            continue
+        report = validate_contract(contract)
+        if report.valid and not report.warnings:
+            continue
+        if not report.valid:
+            invalid += 1
+        for violation in report.violations:
+            typer.echo(f"{path.name}	{violation.severity.value}	"
+                       f"{violation.path}	{violation.rule}	{violation.message}")
+
+    typer.echo(f"contratos .............: {len(paths)} ({invalid} invalidos)")
+    if invalid and strict:
+        raise typer.Exit(code=1)
 
 
 @app.command("check-names")

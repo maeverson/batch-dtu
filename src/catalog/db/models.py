@@ -217,10 +217,22 @@ class JobContractVersion(Base, TimestampMixin):
     steps_count: Mapped[int | None] = mapped_column(Integer)
     source: Mapped[str] = mapped_column(String(32), nullable=False, default="seed")
 
+    # Veredito do schema NO MOMENTO DA ESCRITA. Fica na versão, não no job:
+    # o contrato é imutável, então o veredito também é — revalidar o parque
+    # depois de mudar as regras gera versões novas, não reescreve o passado.
+    validation_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="unknown", server_default="unknown", index=True
+    )
+    validation: Mapped[dict | None] = mapped_column(JSONB)
+
     job: Mapped[Job] = relationship(back_populates="contract_versions", foreign_keys=[job_id])
 
     __table_args__ = (
         CheckConstraint("source in ('seed','import','api','reconciliation')", name="source_valida"),
+        CheckConstraint(
+            "validation_status in ('valid','valid_with_warnings','invalid','unknown')",
+            name="validation_status_valido",
+        ),
         UniqueConstraint("job_id", "version", name="uq_job_contract_version_job_id_version"),
         UniqueConstraint("job_id", "contract_hash", name="uq_job_contract_version_job_id_hash"),
         {"schema": SCHEMA},
