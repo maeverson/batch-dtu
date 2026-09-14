@@ -7,13 +7,14 @@ de verdade — mesmo código, dependências trocadas."""
 from __future__ import annotations
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from catalog.db.session import database_url
 
 from .config import Settings
-from .routers import audit, change_requests, executions, jobs
+from .routers import audit, change_requests, executions, jobs, me
 from .security import TokenVerifier
 from .ssh_backend import SSHExecutionBackend
 
@@ -39,10 +40,23 @@ def create_app(settings: Settings | None = None, *, execution_backend=None,
     app.state.loki_base_url = settings.loki.base_url
     app.state.settings = settings
 
+    # O Back Office (SPA React) chama a API direto do navegador — sem isto,
+    # qualquer fetch cross-origin (localhost:5173 -> localhost:8000) é
+    # bloqueado antes de chegar aqui. Só origens conhecidas, nunca "*" (há
+    # Bearer token envolvido).
+    if settings.cors_allow_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(settings.cors_allow_origins),
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
     app.include_router(jobs.router)
     app.include_router(executions.router)
     app.include_router(change_requests.router)
     app.include_router(audit.router)
+    app.include_router(me.router)
 
     @app.get("/health", tags=["operacional"])
     def health() -> dict:

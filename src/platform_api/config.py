@@ -75,18 +75,27 @@ class LokiSettings:
         return cls(base_url=os.environ.get("LOKI_URL", cls.base_url))
 
 
+# Origens do Back Office (React/Vite) autorizadas a chamar a API do navegador.
+# Default = os mesmos `redirectUris`/`webOrigins` do cliente `back-office` no
+# realm Keycloak local (`docker/keycloak/realm-batch-dtu.json`).
+_DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://localhost:3001"
+
+
 @dataclass(frozen=True)
 class Settings:
     oidc: OIDCSettings = field(default_factory=OIDCSettings)
     ssh: SSHBackendSettings = field(default_factory=SSHBackendSettings)
     loki: LokiSettings = field(default_factory=LokiSettings)
     db_role: str = "app"
+    cors_allow_origins: tuple[str, ...] = tuple(_DEFAULT_CORS_ORIGINS.split(","))
 
     @classmethod
     def from_env(cls) -> "Settings":
+        origens = os.environ.get("CORS_ALLOW_ORIGINS", _DEFAULT_CORS_ORIGINS)
         return cls(
             oidc=OIDCSettings.from_env(),
             ssh=SSHBackendSettings.from_env(),
             loki=LokiSettings.from_env(),
             db_role=os.environ.get("PLATFORM_API_DB_ROLE", "app"),
+            cors_allow_origins=tuple(o.strip() for o in origens.split(",") if o.strip()),
         )

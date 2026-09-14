@@ -25,8 +25,70 @@ class JobOut(BaseModel):
     status_reason: str | None
     kind: str
     contract_path: str | None
+    owner: str | None
+    criticality: str | None
+    sla: str | None
+    current_contract_version_id: UUID | None
+    updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class JobScheduleOut(BaseModel):
+    id: UUID
+    schedule_expr: str | None
+    timezone: str
+    enabled: bool
+    catchup_policy: str | None
+    manual_steps: str | None
+    dates_pattern: str | None
+    no_mail: bool
+    raw_line: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class JobContractOut(BaseModel):
+    version: int
+    schema_version: str | None
+    contract: dict
+    contract_hash: str
+    validation_status: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ReconciliationFindingOut(BaseModel):
+    id: UUID
+    kind: str
+    severity: str
+    subject: str
+    detail: str | None
+    status: str
+    explanation: str | None
+    fingerprint: str
+
+    model_config = {"from_attributes": True}
+
+
+class ReconciliationStateOut(BaseModel):
+    host: str
+    state: str = Field(..., description="'ok' | 'divergente' | 'nunca_rodou'")
+    run_id: UUID | None
+    run_finished_at: datetime | None
+    open_findings: list[ReconciliationFindingOut]
+
+
+class MeOut(BaseModel):
+    subject: str
+    roles: list[str]
+    visible_domains: list[str] | None = Field(
+        None, description="null = todos os domínios (algum binding sem escopo de domínio)"
+    )
+    visible_environments: list[str] | None = Field(
+        None, description="null = todos os ambientes (algum binding sem escopo de ambiente)"
+    )
 
 
 class JobStatusChange(BaseModel):

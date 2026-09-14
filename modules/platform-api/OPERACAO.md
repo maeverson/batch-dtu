@@ -62,6 +62,9 @@ PROD e UAT; um sem NENHUM escopo cobre tudo daquela role.
 |---|---|
 | `GET /jobs?domain=&client=&environment=&status=` | Lista jobs dentro do escopo do token |
 | `GET /jobs/{id}` | Um job |
+| `GET /jobs/{id}/schedules` | Agendas do job (`schedule_expr`, timezone, `raw_line`) |
+| `GET /jobs/{id}/contract` | Contrato JSON da versão corrente |
+| `GET /jobs/{id}/reconciliation` | Divergências abertas na reconciliação mais recente do host (Back Office, Etapa 1.4) |
 | `POST /jobs/{id}/validate` | Roda o schema (`catalog.contract_schema`) contra o contrato corrente |
 | `PATCH /jobs/{id}/status` | Grava o estado desejado + abre `crontab_change_request` — ver ciclo no `CLAUDE.md` |
 | `POST /executions` | Execução manual / reprocesso — ver fluxo abaixo |
@@ -70,6 +73,7 @@ PROD e UAT; um sem NENHUM escopo cobre tudo daquela role.
 | `GET /change-requests?state=&host=` | Worklist do Back Office |
 | `POST /change-requests/{id}/cancel` | Desiste de uma mudança pendente |
 | `GET /audit-events?...` | Exige `batch.admin` |
+| `GET /me` | Subject, roles e domínios/ambientes visíveis do token atual (Back Office) |
 
 ### `POST /executions` — o que é obrigatório
 

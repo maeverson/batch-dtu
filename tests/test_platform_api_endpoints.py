@@ -188,6 +188,30 @@ def test_sem_token_e_401(client):
     assert r.status_code == 401
 
 
+def test_cors_libera_origem_do_back_office(client):
+    # Sem isto, todo fetch do Back Office (localhost:5173) trava no navegador
+    # antes de chegar num 401/403 — CORSMiddleware em `app.py`.
+    r = client.options(
+        "/jobs",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert r.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+
+def test_cors_recusa_origem_desconhecida(client):
+    r = client.options(
+        "/jobs",
+        headers={
+            "Origin": "http://evil.example",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert "access-control-allow-origin" not in r.headers
+
+
 def test_token_sem_binding_nao_ve_o_job(client, session):
     _job(session)
     r = client.get("/jobs", headers=_auth("viewer"))
@@ -432,3 +456,123 @@ def test_audit_events_exige_admin(client, session):
 
     r2 = client.get("/audit-events", headers=_auth("admin-batch"))
     assert r2.status_code == 200
+
+
+# --- /me (Back Office, Etapa 1.4) ---------------------------------------
+
+def test_me_sem_binding_nenhum_escopo_visivel(client, session):
+    r = client.get("/me", headers=_auth("viewer"))
+    assert r.status_code == 200
+    corpo = r.json()
+    assert corpo["subject"] == "viewer"
+    assert "batch.viewer" in corpo["roles"]
+    assert corpo["visible_domains"] == []
+    assert corpo["visible_environments"] == []
+
+
+def test_me_binding_sem_escopo_e_todos_os_dominios(client, session):
+    _binding(session, "viewer", "batch.viewer")   # sem scope_domain/scope_environment
+    r = client.get("/me", headers=_auth("viewer"))
+    corpo = r.json()
+    assert corpo["visible_domains"] is None          # None = todos
+    assert corpo["visible_environments"] is None
+
+
+def test_me_binding_escopado_lista_so_o_escopo(client, session):
+    _binding(session, "operator", "batch.operator", scope_domain="reportes", scope_environment="UAT")
+    r = client.get("/me", headers=_auth("operator"))
+    corpo = r.json()
+    assert corpo["visible_domains"] == ["reportes"]
+    assert corpo["visible_environments"] == ["UAT"]
+
+
+# --- /jobs/{id}/schedules, /contract, /reconciliation (Back Office) ------
+
+def test_job_schedules_endpoint(client, session):
+    from catalog.db.models import JobSchedule
+
+    job = _job(session)
+    _binding(session, "viewer", "batch.viewer")
+    session.add(JobSchedule(
+        job_id=job.id, schedule_expr="0 2 * * *", timezone="America/Lima",
+        raw_line="0 2 * * * /fw/schedulers/reportes/prd_aaa_col_rpt.sh", created_by="teste",
+    ))
+    session.commit()
+
+    r = client.get(f"/jobs/{job.id}/schedules", headers=_auth("viewer"))
+    assert r.status_code == 200
+    assert r.json()[0]["schedule_expr"] == "0 2 * * *"
+
+
+def test_job_contract_endpoint(client, session):
+    job = _job(session)
+    _binding(session, "viewer", "batch.viewer")
+
+    r = client.get(f"/jobs/{job.id}/contract", headers=_auth("viewer"))
+    assert r.status_code == 200
+    assert r.json()["contract"]["name_process"] == "reportes"
+    assert r.json()["validation_status"] == "valid"
+
+
+def test_job_contract_endpoint_sem_versao_e_404(client, session):
+    job = _job(session)
+    job.current_contract_version_id = None
+    session.commit()
+    _binding(session, "viewer", "batch.viewer")
+
+    r = client.get(f"/jobs/{job.id}/contract", headers=_auth("viewer"))
+    assert r.status_code == 404
+
+
+def test_job_reconciliation_nunca_rodou(client, session):
+    job = _job(session)
+    _binding(session, "viewer", "batch.viewer")
+
+    r = client.get(f"/jobs/{job.id}/reconciliation", headers=_auth("viewer"))
+    assert r.status_code == 200
+    assert r.json()["state"] == "nunca_rodou"
+    assert r.json()["open_findings"] == []
+
+
+def test_job_reconciliation_ok_e_divergente(client, session):
+    from catalog.db.models import ReconciliationFinding, ReconciliationRun
+
+    job_ok = _job(session, process_name="prd_ok_col_rpt")
+    job_divergente = _job(session, process_name="prd_div_col_rpt")
+    _binding(session, "viewer", "batch.viewer")
+
+    run = ReconciliationRun(host="srv-sftp-2", triggered_by="teste")
+    session.add(run)
+    session.flush()
+    session.add(ReconciliationFinding(
+        run_id=run.id, kind="job-orfao", severity="erro", subject=job_divergente.process_name,
+        job_id=job_divergente.id, status="open", fingerprint="fp-1",
+    ))
+    session.commit()
+
+    r_ok = client.get(f"/jobs/{job_ok.id}/reconciliation", headers=_auth("viewer"))
+    assert r_ok.json()["state"] == "ok"
+
+    r_div = client.get(f"/jobs/{job_divergente.id}/reconciliation", headers=_auth("viewer"))
+    corpo = r_div.json()
+    assert corpo["state"] == "divergente"
+    assert corpo["open_findings"][0]["fingerprint"] == "fp-1"
+
+
+def test_job_reconciliation_finding_explicado_nao_conta_como_divergente(client, session):
+    from catalog.db.models import ReconciliationFinding, ReconciliationRun
+
+    job = _job(session)
+    _binding(session, "viewer", "batch.viewer")
+
+    run = ReconciliationRun(host="srv-sftp-2", triggered_by="teste")
+    session.add(run)
+    session.flush()
+    session.add(ReconciliationFinding(
+        run_id=run.id, kind="job-orfao", severity="erro", subject=job.process_name,
+        job_id=job.id, status="explained", explanation="cliente confirmado", fingerprint="fp-2",
+    ))
+    session.commit()
+
+    r = client.get(f"/jobs/{job.id}/reconciliation", headers=_auth("viewer"))
+    assert r.json()["state"] == "ok"   # achado FECHADO não conta como divergência aberta

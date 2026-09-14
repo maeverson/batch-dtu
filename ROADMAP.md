@@ -90,13 +90,33 @@ e verificada (`modules/platform-api/OPERACAO.md`); falta só o SSH de ponta a po
 
 ### Etapa 1.4 — `back-office` — *paralelo com 1.3*
 
-- [ ] Navegação do catálogo (filtros por domínio/cliente/ambiente/status)
-- [ ] Fluxo de execução manual com confirmação explícita de data-alvo
-- [ ] Confirmação reforçada para `upload_remote` em PROD (redigitar data)
-- [ ] Reprocesso multi-data com preview da serialização
-- [ ] Monitoramento em tempo real (status + logs via API)
-- [ ] Enable/disable com reason + estado da reconciliação
-- [ ] Renderização condicionada a role
+App em `frontend/` (Vite + React + TypeScript; código não fica em `modules/back-office/`, que tem
+só docs — mesmo padrão do `platform-api`). Exigiu 4 extensões aditivas na Platform API: `GET /me`,
+`GET /jobs/{id}/schedules`, `GET /jobs/{id}/contract`, `GET /jobs/{id}/reconciliation`, CORS, e um
+`protocolMapper` de audiência a mais no cliente Keycloak `back-office` — tudo em
+`docs/api/platform-api.md` e `modules/platform-api/OPERACAO.md`.
+
+- [x] Navegação do catálogo (filtros por domínio/cliente/ambiente/status) — `CatalogPage.tsx` +
+  `JobDetailPage.tsx` (contrato JSON, agenda, owner, SLA, histórico de execuções)
+- [x] Fluxo de execução manual com confirmação explícita de data-alvo — `ExecuteModal.tsx`
+- [x] Confirmação reforçada para `upload_remote` em PROD (redigitar data) — mesmo componente,
+  passo condicionado a `job.environment === 'PROD'` + contrato ter `upload_remote`/`download_remote`
+- [x] Reprocesso multi-data com preview da serialização — mesmo componente
+- [x] Monitoramento em tempo real (status + logs via API) — `ExecutionsPage.tsx` +
+  `ExecutionDetailPage.tsx`, por polling; **ressalva**: `POST /executions` é síncrono na Fase 1,
+  então "tempo real" é reconsulta, não stream — ver `modules/back-office/OPERACAO.md`. "Resultado
+  por step" fica para o Executor v3 (Fase 2), que é quem estrutura isso
+- [x] Enable/disable com reason + estado da reconciliação — `StatusChangeModal.tsx` + painel de
+  reconciliação em `JobDetailPage.tsx`
+- [x] Renderização condicionada a role — `src/rbac.ts` + `GET /me`; gate é só para OFERECER a ação
+  (o 403 do servidor continua sendo quem autoriza de fato)
+
+**Verificado neste ambiente**: `tsc -b`, `vite build` e `oxlint` limpos; servidor de dev sobe e
+serve a página. **Não verificado**: teste end-to-end em navegador real (login PKCE completo,
+clicar em executar) — não há browser headless disponível neste ambiente de desenvolvimento
+(Playwright recusa instalar Chromium na distro do sandbox), mesma classe de limitação já registrada
+para o container `docker/legacy` na Etapa 1.2. Fazer esse teste manual é pré-requisito do marco da
+Fase 1 abaixo.
 
 ### 🏁 Marco de conclusão da Fase 1
 

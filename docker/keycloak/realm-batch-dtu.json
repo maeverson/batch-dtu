@@ -50,6 +50,18 @@
         "profile",
         "email",
         "roles"
+      ],
+      "protocolMappers": [
+        {
+          "name": "audience-platform-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "platform-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
       ]
     },
     {

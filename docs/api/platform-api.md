@@ -8,9 +8,17 @@ Autenticação: **Entra ID (OIDC)**. Autorização: roles `batch.*` com escopo d
 ```
 GET    /jobs                      # busca/filtro: domain, client, environment, status
 GET    /jobs/{id}
+GET    /jobs/{id}/schedules       # agendas do job (schedule_expr, timezone, raw_line)
+GET    /jobs/{id}/contract        # contrato JSON da versão corrente
+GET    /jobs/{id}/reconciliation  # divergências ABERTAS na reconciliação mais recente do host do job
 POST   /jobs/{id}/validate        # equivalente a --validate-file
 PATCH  /jobs/{id}/status          # habilitar/desabilitar com reason
 ```
+
+`GET /jobs/{id}/reconciliation` responde `{"host", "state": "ok"|"divergente"|"nunca_rodou",
+"run_id", "run_finished_at", "open_findings": [...]}` — alimenta o estado de reconciliação que o
+Back Office mostra ao lado de habilitar/desabilitar (Etapa 1.4). Todos os três GETs exigem só
+visibilidade do job (mesma regra de `GET /jobs/{id}`), não a role de operar.
 
 `PATCH /jobs/{id}/status` grava o estado desejado no catálogo **e** abre um `crontab_change_request`. A resposta traz a **linha-alvo** a aplicar (não um diff do arquivo, que pode não aplicar mais quando o operador executar), já com o marcador `#BO:{job_id}:{change_id}`:
 
@@ -72,6 +80,15 @@ POST   /approvals/{id}/decision    # approve | reject + justificativa (aprovador
 ```
 GET    /audit-events?actor=&action=&target=&from=&to=   # append-only, somente leitura
 ```
+
+### Identidade
+```
+GET    /me   # subject, roles do token, domínios/ambientes visíveis (mesmo Scope de authz.py)
+```
+
+Usado pelo Back Office para renderização condicionada a role sem duplicar a regra de autorização
+— o servidor continua sendo quem de fato autoriza cada ação; isto só evita oferecer na UI uma ação
+que o 403 recusaria.
 
 ## Backend Fase 1 (transitório)
 

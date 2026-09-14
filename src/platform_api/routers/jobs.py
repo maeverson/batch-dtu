@@ -24,11 +24,22 @@ from catalog.db.models import (
     JobContractVersion,
     JobRevision,
     JobSchedule,
+    ReconciliationFinding,
+    ReconciliationRun,
 )
 
 from ..authz import Scope, binding_matches
 from ..deps import get_current_user, get_scope, get_session, job_for_operate, job_for_view
-from ..schemas import ChangeRequestOut, ErrorOut, JobOut, JobStatusChange
+from ..schemas import (
+    ChangeRequestOut,
+    ErrorOut,
+    JobContractOut,
+    JobOut,
+    JobScheduleOut,
+    JobStatusChange,
+    ReconciliationFindingOut,
+    ReconciliationStateOut,
+)
 from ..security import AuthenticatedUser
 
 router = APIRouter(prefix="/jobs", tags=["catalogo"])
@@ -73,6 +84,69 @@ def listar(
 @router.get("/{job_id}", response_model=JobOut)
 def obter(job: Job = Depends(job_for_view)) -> Job:
     return job
+
+
+@router.get("/{job_id}/schedules", response_model=list[JobScheduleOut])
+def agendas(
+    job: Job = Depends(job_for_view), session: Session = Depends(get_session)
+) -> list[JobSchedule]:
+    return list(
+        session.scalars(
+            select(JobSchedule).where(JobSchedule.job_id == job.id)
+            .order_by(JobSchedule.cron_lineno)
+        )
+    )
+
+
+@router.get(
+    "/{job_id}/contract",
+    response_model=JobContractOut,
+    responses={404: {"model": ErrorOut}},
+)
+def contrato_corrente(
+    job: Job = Depends(job_for_view), session: Session = Depends(get_session)
+) -> JobContractVersion:
+    """Contrato JSON da versão corrente — o mesmo que `catalog history
+    <processo>` mostra (`ROADMAP.md`, Etapa 1.1), aqui via REST."""
+    if job.current_contract_version_id is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "job sem versão de contrato")
+    versao = session.get(JobContractVersion, job.current_contract_version_id)
+    if versao is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "versão de contrato ausente")
+    return versao
+
+
+@router.get("/{job_id}/reconciliation", response_model=ReconciliationStateOut)
+def estado_de_reconciliacao(
+    job: Job = Depends(job_for_view), session: Session = Depends(get_session)
+) -> ReconciliationStateOut:
+    """Divergências ABERTAS do job na reconciliação mais recente do HOST dele
+    (`catalog reconcile` roda por host — ver `CLAUDE.md` raiz). Alimenta o
+    item "estado da reconciliação" do enable/disable no Back Office."""
+    ultima_run = session.scalar(
+        select(ReconciliationRun).where(ReconciliationRun.host == job.host)
+        .order_by(ReconciliationRun.started_at.desc()).limit(1)
+    )
+    if ultima_run is None:
+        return ReconciliationStateOut(
+            host=job.host, state="nunca_rodou", run_id=None,
+            run_finished_at=None, open_findings=[],
+        )
+
+    achados = list(
+        session.scalars(
+            select(ReconciliationFinding).where(
+                ReconciliationFinding.run_id == ultima_run.id,
+                ReconciliationFinding.job_id == job.id,
+                ReconciliationFinding.status == "open",
+            )
+        )
+    )
+    return ReconciliationStateOut(
+        host=job.host, state="divergente" if achados else "ok",
+        run_id=ultima_run.id, run_finished_at=ultima_run.finished_at,
+        open_findings=[ReconciliationFindingOut.model_validate(a) for a in achados],
+    )
 
 
 @router.post(
