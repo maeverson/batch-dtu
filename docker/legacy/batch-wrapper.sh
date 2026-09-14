@@ -111,9 +111,32 @@ esac
 ARGS=(--process-file "$PROCESS_FILE")
 [ -n "$MANUAL_STEPS" ] && ARGS+=(--manual-steps "$MANUAL_STEPS")
 [ -n "$DATES" ] && ARGS+=(--dates-pattern-files "$DATES")
-[ -n "$EXECUTION_ID" ] && ARGS+=(--execution-id "$EXECUTION_ID")
 [ "$NO_MAIL" = 1 ] && ARGS+=(--no-mail)
 [ "$VALIDATE" = 1 ] && ARGS+=(--validate-file)
 
-log ALLOW "process_file=$PROCESS_FILE steps=${MANUAL_STEPS:-todos} dates=${DATES:-hoje} execution_id=${EXECUTION_ID:-nenhum}"
+# 6. `execution_id` no nome do log SEM tocar no legado.
+#
+#    O main.sh real nao aceita identificador de execucao (flag desconhecida e
+#    fatal) e calcula o proprio caminho de log a partir da data. Quem controla o
+#    redirecionamento e este wrapper, entao e aqui que a correlacao nasce: o
+#    log da plataforma leva o execution_id no nome, e a linha ALLOW abaixo liga
+#    os dois para quem for auditar.
+BO_LOG=""
+if [ -n "$EXECUTION_ID" ]; then
+    PROC_NAME=$(basename "$PROCESS_FILE" .json)
+    DOMAIN=$(basename "$(dirname "$PROCESS_FILE")")
+    BO_LOG_DIR="${BO_LOG_DIR:-$FW_ROOT/logs/backoffice/$DOMAIN}"
+    mkdir -p "$BO_LOG_DIR" 2>/dev/null
+    BO_LOG="$BO_LOG_DIR/${PROC_NAME}.${EXECUTION_ID}.log"
+fi
+
+log ALLOW "process_file=$PROCESS_FILE steps=${MANUAL_STEPS:-todos} dates=${DATES:-hoje} execution_id=${EXECUTION_ID:-nenhum} bo_log=${BO_LOG:-nenhum}"
+
+if [ -n "$BO_LOG" ]; then
+    # `tee` preserva o stream para o SSH (a API acompanha o andamento) e grava
+    # o arquivo correlacionado. PIPESTATUS devolve o codigo do main.sh, nao o
+    # do tee — o resultado do job nao pode ser mascarado.
+    "$MAIN_SH" "${ARGS[@]}" 2>&1 | tee -a "$BO_LOG"
+    exit "${PIPESTATUS[0]}"
+fi
 exec "$MAIN_SH" "${ARGS[@]}"

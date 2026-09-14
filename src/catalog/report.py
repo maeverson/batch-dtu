@@ -249,3 +249,136 @@ def _flatten(value: object) -> object:
     if isinstance(value, (tuple, list)):
         return "|".join(str(v) for v in value)
     return value
+
+
+# ---------------------------------------------------------------------------
+# Relatórios do catálogo persistido (ver catalog/db/queries.py)
+# ---------------------------------------------------------------------------
+ACAO_POR_ACHADO = {
+    "alias-nao-declarado": "Declarar o alias no connections.json do host, ou confirmar job morto",
+    "contrato-invalido": "Corrigir o contrato (violacao de schema)",
+    "contrato-json-invalido": "Corrigir o JSON — o arquivo nao parseia",
+    "contrato-ausente": "Restaurar o contrato ou remover a entrada do crontab",
+    "wrapper-ausente": "Restaurar o wrapper ou remover a entrada do crontab",
+    "cliente-outlier-no-contrato": "Confirmar o campo `client` do contrato",
+    "drift-nao-gerenciado": "Crontab editado fora do fluxo: reverter ou abrir change_request",
+    "mudanca-pendente-vencida": "Aplicar a linha-alvo — o cron nao parou sozinho",
+    "dimensao-divergente": "Conferir a dimensao declarada no contrato",
+}
+
+
+def render_triagem(triagem, *, limite_por_grupo: int = 12) -> str:
+    """Achados agrupados por quem decide, com o fingerprint de cada decisão."""
+    linhas = [
+        f"# Triagem de achados — `{triagem.host}`",
+        "",
+        "**Contém nomes de cliente, IPs e caminhos internos — não commitar.**",
+        "",
+        f"Reconciliação: `{triagem.run_id or 'nenhuma'}`. "
+        f"Achados abertos: **{len(triagem.achados)}**.",
+        "",
+        "Depois da decisão, registre com "
+        "`catalog explain <fingerprint> --reason \"...\" --actor <voce>` — a explicação "
+        "sobrevive às reconciliações seguintes e é o que fecha o critério "
+        "*sem divergência não explicada*.",
+        "",
+    ]
+    if not triagem.achados:
+        linhas += ["Nenhum achado aberto. O critério de reconciliação está fechado para este host.", ""]
+        return "\n".join(linhas)
+
+    erros = sum(1 for a in triagem.achados if a.severity == "erro")
+    linhas += [f"Por severidade: **{erros} erros**, "
+               f"{sum(1 for a in triagem.achados if a.severity == 'aviso')} avisos, "
+               f"{sum(1 for a in triagem.achados if a.severity == 'info')} infos.", ""]
+
+    for grupo, achados in triagem.por_grupo.items():
+        ativos = sum(1 for a in achados if a.job_enabled)
+        marca = ""
+        if any(a.entrega_a_cliente for a in achados):
+            marca = " — ⚠️ **entrega a cliente (`upload_remote`)**"
+        linhas += [f"## {grupo} — {len(achados)} achado(s), {ativos} em job ativo{marca}", ""]
+        for achado in achados[:limite_por_grupo]:
+            linhas += [
+                f"- **{achado.kind}** ({achado.severity}) — `{achado.subject}`",
+                f"  - {achado.detail}",
+            ]
+            if achado.job_process:
+                linhas.append(
+                    f"  - job: `{achado.job_process}` "
+                    f"({'ativo' if achado.job_enabled else 'desabilitado'})"
+                )
+            acao = ACAO_POR_ACHADO.get(achado.kind)
+            if acao:
+                linhas.append(f"  - ação: {acao}")
+            linhas.append(f"  - `catalog explain {achado.fingerprint}`")
+        if len(achados) > limite_por_grupo:
+            linhas.append(f"- … e mais {len(achados) - limite_por_grupo} neste grupo")
+        linhas.append("")
+    return "\n".join(linhas)
+
+
+def render_amostra(host: str, amostra: dict, *, seed: int) -> str:
+    """Checklist de conferência humana — o critério 'validação amostral'."""
+    total = sum(len(v) for v in amostra.values())
+    linhas = [
+        f"# Validação amostral por domínio — `{host}`",
+        "",
+        f"Amostra determinística (semente `{seed}`): **{total} jobs** em "
+        f"{len(amostra)} domínios. A mesma semente devolve a mesma amostra — "
+        "a conferência pode ser refeita e auditada.",
+        "",
+        "Para cada job, confira **domínio, status e razão** contra o crontab e o contrato. "
+        "Marque a caixa quando conferido.",
+        "",
+    ]
+    for dominio, itens in amostra.items():
+        linhas += [f"## {dominio} — {len(itens)} job(s)", ""]
+        for item in itens:
+            agendas = ", ".join(
+                f"`{expr or 'on-demand'}`{'' if ativa else ' (desabilitada)'}"
+                for expr, ativa in item.schedules
+            ) or "sem agenda"
+            linhas += [
+                f"- [ ] **`{item.process_name}`**",
+                f"  - catálogo: domínio `{item.domain}` · status `{item.status}` · "
+                f"ambiente `{item.environment}` · cliente `{item.client}`",
+                f"  - agendas: {agendas}",
+            ]
+            if item.status_reason:
+                razao = item.status_reason.replace("\n", " ⏎ ")[:200]
+                linhas.append(f"  - razão registrada: _{razao}_")
+            if item.contrato_declara:
+                declara = " · ".join(
+                    f"{k}=`{v}`" for k, v in item.contrato_declara.items() if v
+                )
+                linhas.append(f"  - contrato declara: {declara}")
+        linhas.append("")
+    return "\n".join(linhas)
+
+
+def render_historico(job, eventos) -> str:
+    linhas = [
+        f"# Histórico — `{job.process_name}` (`{job.host}`)",
+        "",
+        f"Domínio `{job.domain}` · ambiente `{job.environment}` · "
+        f"cliente `{job.client_name or job.client_code}` · status `{job.status}`",
+        "",
+    ]
+    if not eventos:
+        return "\n".join(linhas + ["Sem histórico registrado.", ""])
+
+    for evento in eventos:
+        quando = evento.quando.strftime("%Y-%m-%d %H:%M") if evento.quando else "?"
+        linhas.append(
+            f"- `{quando}` **{evento.tipo} v{evento.versao}** por `{evento.quem}` — {evento.resumo}"
+        )
+        antes = (evento.detalhe or {}).get("antes") or {}
+        depois = (evento.detalhe or {}).get("depois") or {}
+        for campo in sorted(antes):
+            linhas.append(f"    - `{campo}`: {antes[campo]!r} → {depois.get(campo)!r}")
+        violacoes = ((evento.detalhe or {}).get("validation") or {}).get("violations") or []
+        for v in violacoes[:3]:
+            linhas.append(f"    - schema: {v.get('path')} — {v.get('message')}")
+    linhas.append("")
+    return "\n".join(linhas)

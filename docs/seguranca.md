@@ -32,3 +32,4 @@
 - Conta de serviço dedicada `backoffice_svc` (distinta de `batch_user`).
 - `authorized_keys` restrito via `command=` a um script wrapper que só aceita invocações válidas de `main.sh`.
 - A API constrói invocações a partir de **campos tipados** (processo do catálogo + steps + data); nunca interpola shell arbitrário. O wrapper server-side revalida.
+- O wrapper aceita `--execution-id` da API mas **não o repassa ao `main.sh`** — o engine legado trata flag desconhecida como fatal. O identificador serve para o wrapper nomear o log correlacionado. O `main.sh` do `docker/legacy` é deliberadamente tão restritivo quanto o real nesse ponto: um stub mais permissivo que o original esconderia a falha até a primeira execução em UAT.

@@ -221,6 +221,98 @@ def validate_command(
         raise typer.Exit(code=1)
 
 
+@app.command("triage")
+def triage_command(
+    host: str | None = typer.Option(None, "--host", help="Host; omitido = todos no catálogo"),
+    out: Path | None = typer.Option(None, "--out", help="Grava o relatório em markdown"),
+    todos: bool = typer.Option(False, "--todos", help="Inclui achados já explicados"),
+    role: str = typer.Option("app", "--role"),
+) -> None:
+    """Agrupa os achados abertos por quem decide, com o fingerprint de cada um."""
+    from .db.queries import hosts_no_catalogo, triagem
+    from .db.session import session_scope
+    from .report import render_triagem
+
+    partes: list[str] = []
+    resumo: list[tuple[str, int, int]] = []
+    with session_scope(role) as session:
+        alvos = [host] if host else hosts_no_catalogo(session)
+        if not alvos:
+            typer.echo("catalogo vazio — rode `catalog load` antes")
+            raise typer.Exit(code=1)
+        for alvo in alvos:
+            t = triagem(session, alvo, apenas_abertos=not todos)
+            partes.append(render_triagem(t))
+            resumo.append((alvo, len(t.achados),
+                           sum(1 for a in t.achados if a.severity == "erro")))
+
+    texto = "\n\n---\n\n".join(partes)
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(texto, encoding="utf-8")
+        typer.echo(f"relatorio .............: {out}")
+    else:
+        typer.echo(texto)
+
+    for alvo, total, erros in resumo:
+        typer.echo(f"{alvo:.<38} {total} aberto(s), {erros} erro(s)")
+
+
+@app.command("sample")
+def sample_command(
+    host: str = typer.Argument(..., help="Host a amostrar"),
+    por_dominio: int = typer.Option(3, "--por-dominio", help="Jobs por domínio"),
+    seed: int = typer.Option(20260911, "--seed", help="Semente — mesma semente, mesma amostra"),
+    out: Path | None = typer.Option(None, "--out"),
+    role: str = typer.Option("app", "--role"),
+) -> None:
+    """Amostra determinística por domínio para a conferência humana."""
+    from .db.queries import amostra_por_dominio
+    from .db.session import session_scope
+    from .report import render_amostra
+
+    with session_scope(role) as session:
+        amostra = amostra_por_dominio(session, host, por_dominio=por_dominio, seed=seed)
+
+    if not amostra:
+        typer.echo(f"nenhum job do host {host} no catalogo")
+        raise typer.Exit(code=1)
+
+    texto = render_amostra(host, amostra, seed=seed)
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(texto, encoding="utf-8")
+        typer.echo(f"checklist .............: {out}")
+    else:
+        typer.echo(texto)
+    typer.echo(f"jobs ..................: {sum(len(v) for v in amostra.values())} "
+               f"em {len(amostra)} dominios (semente {seed})")
+
+
+@app.command("history")
+def history_command(
+    process_name: str = typer.Argument(..., help="Nome do processo (ex.: prd_aaa_col_rpt)"),
+    host: str | None = typer.Option(None, "--host", help="Desambigua quando o job existe nos dois"),
+    role: str = typer.Option("app", "--role"),
+) -> None:
+    """Histórico de versões de contrato e revisões de metadados, com diffs."""
+    from .db.queries import historico, job_por_nome
+    from .db.session import session_scope
+    from .report import render_historico
+
+    with session_scope(role) as session:
+        jobs = job_por_nome(session, process_name, host)
+        if not jobs:
+            typer.echo(f"job nao encontrado: {process_name}")
+            raise typer.Exit(code=1)
+        if len(jobs) > 1 and host is None:
+            typer.echo(f"`{process_name}` existe em {len(jobs)} hosts "
+                       f"({', '.join(j.host for j in jobs)}); use --host")
+            raise typer.Exit(code=1)
+        texto = render_historico(jobs[0], historico(session, jobs[0]))
+    typer.echo(texto)
+
+
 @app.command("check-names")
 def check_names(
     package: Path = typer.Argument(..., help="Diretório do pacote extraído"),

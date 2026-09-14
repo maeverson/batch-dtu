@@ -476,11 +476,211 @@ class ReconciliationFinding(Base):
 
 APPEND_ONLY_TABLES = ("audit_event", "job_contract_version", "job_revision")
 
+
+# ---------------------------------------------------------------------------
+# Mudança de agendamento (Fase 1: aplicação manual, verificação automática)
+# ---------------------------------------------------------------------------
+class CrontabChangeRequest(Base, TimestampMixin):
+    """Intenção de mudar o estado de agendamento de um job.
+
+    Existe porque, sem ela, a reconciliação só sabe dizer `catálogo ≠ crontab` —
+    e não sabe se aquilo é uma mudança em andamento ou alguém editando o crontab
+    na mão. São os dois casos que exigem resposta oposta: um é esperado, o outro
+    é alarme.
+
+    Na Fase 1 a plataforma **não escreve no crontab** (invariante 2: não tocar no
+    plano de execução; um bug num arquivo de 597 linhas editadas à mão é
+    catastrófico, e o crontab ainda tem entradas fora do catálogo). O ciclo é
+    aplicação manual + verificação automática:
+
+        pending  --(operador aplica a linha-alvo)-->  applied
+        pending/applied  --(reconciliação detecta o estado desejado)-->  verified
+
+    `cancelled` é desistência; `expired` é pending além do SLA — que importa
+    porque desabilitar no catálogo NÃO para o cron: até alguém aplicar, o job
+    continua disparando.
+
+    Na Fase 2 o executor do apply deixa de ser humano e vira pipeline; a máquina
+    de estados sobrevive inalterada.
+    """
+
+    __tablename__ = "crontab_change_request"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.job.id", ondelete="RESTRICT"), nullable=False
+    )
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    desired_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # A linha-alvo, não um diff do arquivo: um diff calculado no PATCH pode não
+    # aplicar mais quando o operador executar. O estado final é estável.
+    instruction: Mapped[str | None] = mapped_column(Text)
+    marker: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    requested_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    applied_by: Mapped[str | None] = mapped_column(String(255))
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Preenchido pela reconciliação, não pelo operador: exigir que ele volte à
+    # UI dizer "apliquei" é o passo que na prática ninguém faz.
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    verified_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.crontab_snapshot.id", ondelete="SET NULL")
+    )
+
+    job: Mapped[Job] = relationship()
+
+    __table_args__ = (
+        CheckConstraint(
+            "state in ('pending','applied','verified','cancelled','expired')",
+            name="state_valido",
+        ),
+        CheckConstraint(
+            "desired_status in ('active','disabled')", name="desired_status_valido"
+        ),
+        Index("ix_crontab_change_request_state", "state"),
+        Index("ix_crontab_change_request_job_id", "job_id"),
+        {"schema": SCHEMA},
+    )
+
+    @property
+    def is_open(self) -> bool:
+        return self.state in ("pending", "applied")
+
+
+# ---------------------------------------------------------------------------
+# Autorização
+# ---------------------------------------------------------------------------
+class RoleBinding(Base, TimestampMixin):
+    """Vínculo entre um sujeito do Entra ID e uma role, com escopo.
+
+    O escopo mora aqui, e não em grupos do Entra, porque precisa ser consultável
+    e auditável junto do catálogo: a pergunta operacional é "quem pode executar
+    este job", e ela se responde por domínio/ambiente/host do próprio job.
+
+    `NULL` em qualquer dimensão de escopo significa **todas** — `scope_domain`
+    nulo é "todos os domínios". É o default deliberado: uma role sem escopo é
+    ampla, então conceder escopo é sempre restringir, nunca ampliar.
+    """
+
+    __tablename__ = "role_binding"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    subject_type: Mapped[str] = mapped_column(String(16), nullable=False, default="user")
+    role: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    scope_domain: Mapped[str | None] = mapped_column(String(64))
+    scope_environment: Mapped[str | None] = mapped_column(String(16))
+    scope_host: Mapped[str | None] = mapped_column(String(255))
+
+    granted_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_by: Mapped[str | None] = mapped_column(String(255))
+
+    __table_args__ = (
+        CheckConstraint(
+            "role in ('batch.viewer','batch.operator','batch.operator-prod','batch.admin')",
+            name="role_valida",
+        ),
+        CheckConstraint("subject_type in ('user','group')", name="subject_type_valido"),
+        CheckConstraint(
+            "scope_environment is null or scope_environment in ('PROD','UAT','TEST','DEV')",
+            name="scope_environment_valido",
+        ),
+        Index("ix_role_binding_subject", "subject"),
+        Index("ix_role_binding_role", "role"),
+        {"schema": SCHEMA},
+    )
+
+    @property
+    def is_active(self) -> bool:
+        return self.revoked_at is None
+
+
+# ---------------------------------------------------------------------------
+# Execução
+# ---------------------------------------------------------------------------
+class Execution(Base, TimestampMixin):
+    """Um registro por invocação — inclusive execução do legado disparada pela
+    API na Fase 1 (invariante 3: execução como dado).
+
+    `id` É o `execution_id` propagado aos logs. Na Fase 1 o `main.sh` não aceita
+    identificador de execução e calcula o próprio caminho de log a partir da
+    data; quem nomeia o arquivo por `execution_id` é o wrapper do `command=`,
+    que controla o redirecionamento. `log_link` guarda essa correlação.
+    """
+
+    __tablename__ = "execution"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.job.id", ondelete="RESTRICT"), nullable=False
+    )
+    trigger: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    requested_steps: Mapped[list[str]] = mapped_column(
+        ARRAY(String(16)), nullable=False, server_default=text("'{}'::varchar[]")
+    )
+    dates_pattern: Mapped[list[str]] = mapped_column(
+        ARRAY(String(32)), nullable=False, server_default=text("'{}'::varchar[]")
+    )
+    no_mail: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
+    result: Mapped[str | None] = mapped_column(String(16))
+    exit_code: Mapped[int | None] = mapped_column(Integer)
+
+    requested_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    justification: Mapped[str | None] = mapped_column(Text)
+    # Chave de idempotência: reenvio da mesma requisição não dispara de novo.
+    # É a salvaguarda do invariante 7 contra reenvio acidental a cliente.
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+
+    backend: Mapped[str] = mapped_column(String(32), nullable=False, default="ssh")
+    host: Mapped[str | None] = mapped_column(String(255))
+    worker: Mapped[str | None] = mapped_column(String(255))
+
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    log_link: Mapped[str | None] = mapped_column(Text)
+
+    job: Mapped[Job] = relationship()
+
+    __table_args__ = (
+        CheckConstraint(
+            "trigger in ('schedule','manual','reprocess','event','dependency')",
+            name="trigger_valido",
+        ),
+        CheckConstraint(
+            "status in ('queued','running','succeeded','failed','cancelled')",
+            name="status_valido",
+        ),
+        CheckConstraint(
+            "result is null or result in ('success','failure','partial')", name="result_valido"
+        ),
+        UniqueConstraint("idempotency_key", name="uq_execution_idempotency_key"),
+        Index("ix_execution_job_id_started_at", "job_id", "started_at"),
+        Index("ix_execution_status", "status"),
+        {"schema": SCHEMA},
+    )
+
+
 __all__ = [
     "APPEND_ONLY_TABLES",
     "AuditEvent",
     "Base",
     "ConnectionAlias",
+    "CrontabChangeRequest",
     "CrontabEntryRow",
     "CrontabSnapshot",
     "Job",
@@ -489,6 +689,8 @@ __all__ = [
     "JobRevision",
     "JobSchedule",
     "ReconciliationFinding",
+    "Execution",
     "ReconciliationRun",
+    "RoleBinding",
     "SCHEMA",
 ]

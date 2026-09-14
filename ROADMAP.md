@@ -12,14 +12,14 @@ Plano incremental de desenvolvimento. Cada etapa entrega valor verificável e de
 
 Fundação de tudo: catálogo como fonte da verdade.
 
-- [ ] Modelo de dados (`job`, `execution`, `audit_event`, `connection_alias`) — ver `docs/modelo-de-dados.md`
+- [x] Modelo de dados (`job`, `execution`, `audit_event`, `connection_alias`) — ver `docs/modelo-de-dados.md`
   - [x] `job` (+ `job_schedule`, `job_contract_version`, `job_revision`, `job_connection_alias`), `audit_event`, `connection_alias`, `crontab_snapshot`/`crontab_entry`, `reconciliation_run`/`reconciliation_finding`
-  - [ ] `execution` — sem fonte na Fase 1 enquanto o cron executa; nasce com o `ExecutionBackend` da Etapa 1.2
+  - [x] `execution` — modelada com `idempotency_key`, `requested_by`/`justification` e `log_link`; populada a partir da Etapa 1.2
 - [x] Migrations e banco (ADR-003: default RDS PostgreSQL) — Alembic; append-only de auditoria por trigger + REVOKE, com teste de drift modelo × migration
 - [x] Importador/seed do inventário, com `status_reason` dos comentários do crontab — `catalog import` (relatório) e `catalog load` (persistência idempotente).
   **A coleta de 09/2026 mediu 597 linhas de job (393 ativas, 204 desabilitadas), consolidadas em 527 jobs distintos**, não as 509 entradas da premissa inicial. O crontab tem 1352 linhas ao todo: 597 de job, 317 de manutenção, o resto prosa, `VAR=` e branco
 - [x] Validação de schema do contrato JSON na escrita — `src/catalog/contract_schema.py`, veredito gravado em `job_contract_version.validation_status`; `catalog validate` valida em lote
-- [x] Versionamento de contrato e metadados — `job_contract_version` (append-only, por hash) e `job_revision` (snapshot + diff do que mudou). Consulta hoje é SQL; endpoint vem na Etapa 1.2
+- [x] Versionamento de contrato e metadados — `job_contract_version` (append-only, por hash) e `job_revision` (snapshot + diff do que mudou), consultáveis por `catalog history <processo>`; o endpoint REST equivalente vem na Etapa 1.2
 - [x] Job de reconciliação crontab × catálogo (diff report) — `catalog reconcile` (leitura pura, grava `reconciliation_run`) + `catalog explain` para fechar divergência conhecida
 - [x] **Coleta, import e carga do host de UAT** (`Batch-DTU` / `com-ins-bch-mdw-dtu-1`, `172.21.86.76`)
   - [x] Coleta (11/09/2026) e `catalog import` — 540 linhas de job, 587 contratos, **21 erros / 22 avisos**. Relatório em `seed/raw/reports/import-com-ins-bch-mdw-dtu-1.md`
@@ -33,16 +33,22 @@ Fundação de tudo: catálogo como fonte da verdade.
   `com-ins-bch-mdw-dtu-1` 365 UAT + 151 TEST + 2 PROD + 1 DEV), 1137 agendas, 1025 versões de
   contrato, 2185 linhas de crontab preservadas, 2859 eventos de auditoria. Reconciliação bate
   1:1 nos dois hosts, com zero divergência estrutural.
-- [ ] Reconciliação sem divergências não explicadas — **27 erros abertos** (PROD 6, UAT 21).
-  Dependem de decisão de owner; ver `seed/raw/reports/triagem-owners.md` e feche cada um com
-  `catalog explain`.
+- [ ] Reconciliação sem divergências não explicadas — **25 erros abertos** (PROD 5, UAT 20) — 1 explicado (`prd_stb_col_rpt`, cliente confirmado com o owner).
+  Dependem de decisão de owner, não de código: `catalog triage` gera o material agrupado por
+  cliente/domínio com o `fingerprint` de cada achado, e `catalog explain` fecha cada um.
+- [ ] Validação amostral por domínio — `catalog sample <host>` gera o checklist determinístico;
+  falta a conferência humana.
 **Desbloqueia**: `platform-api` (bloqueante — a API lê/escreve o catálogo).
 
 ### Etapa 1.2 — `platform-api`
 
 - [ ] Autenticação Entra ID (OIDC) + RBAC (`batch.viewer/operator/operator-prod/admin`) com escopo domínio/ambiente — com UAT no catálogo, `operator-prod` passa a ter contraparte real e a distinção deixa de ser teórica
+  - [x] **Decidido**: stack Python/FastAPI; escopo em `role_binding` no catálogo (não em grupos do Entra); deploy em EKS com VPC até os hosts
+  - [x] Tabela `role_binding` (escopo domínio/ambiente/host; `NULL` = todas)
+  - [ ] Middleware OIDC + resolução de escopo por job (falta: tenant/client id e qual claim carrega as roles)
 - [ ] Interface `ExecutionBackend` + implementação Fase 1 (SSH parametrizado via `backoffice_svc` + wrapper `command=`)
 - [ ] Endpoints de catálogo (busca/filtro, validação, enable/disable com reason)
+  - [x] Ciclo de mudança de agendamento modelado: `crontab_change_request` (`pending` → `applied` → `verified`, + `cancelled`/`expired`), marcador `#BO:<job>:<change>` parseado do crontab, e reconciliação que **fecha o loop por detecção** — verifica o aplicado, acusa `drift-nao-gerenciado` sem request, e expira pendência vencida porque o cron não para sozinho
 - [ ] Endpoint de execução manual (steps, dates_pattern, pré-validação, confirmação de data-alvo)
 - [ ] Reprocesso multi-data com serialização + lock por processo
 - [ ] Auditoria automática (`audit_event`) em toda ação de escrita

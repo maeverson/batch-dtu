@@ -28,6 +28,34 @@ Seed inicial = inventário consolidado (597 linhas de job → 527 jobs distintos
 
 Um registro por invocação — **inclusive execuções do legado disparadas via API na Fase 1**.
 
+## `crontab_change_request`
+
+| Campo | Notas |
+|---|---|
+| `id`, `job_id`, `host` | — |
+| `desired_status` | `active` \| `disabled` |
+| `reason`, `requested_by`, `requested_at`, `expires_at` | Motivo canônico; o crontab guarda só a âncora |
+| `instruction` | A linha-alvo a aplicar, não um diff |
+| `marker` | `#BO:<job_id>:<change_id>` — âncora de parsing da reconciliação |
+| `state` | `pending` → `applied` → `verified`; `cancelled`, `expired` |
+| `applied_by`, `applied_at` | Opcionais: o operador pode não informar |
+| `verified_at`, `verified_snapshot_id` | Preenchidos pela **reconciliação**, por detecção |
+
+Separa divergência **esperada** (mudança em andamento) de **drift não gerenciado** (alguém editou
+o crontab por fora). Sem esta entidade, a reconciliação só sabe dizer `catálogo ≠ crontab`.
+
+## `role_binding`
+
+| Campo | Notas |
+|---|---|
+| `subject`, `subject_type` | Sujeito do Entra ID: `user` ou `group` |
+| `role` | `batch.viewer` \| `batch.operator` \| `batch.operator-prod` \| `batch.admin` |
+| `scope_domain`, `scope_environment`, `scope_host` | **`NULL` = todas**. Conceder escopo restringe |
+| `granted_by`, `revoked_at`, `revoked_by` | Revogação é soft: a trilha permanece |
+
+O escopo mora no catálogo, e não em grupos do Entra, porque a pergunta operacional — "quem pode
+executar este job" — se responde por domínio/ambiente/host do próprio job.
+
 ## `audit_event`
 
 | Campo | Notas |

@@ -1,8 +1,14 @@
 """Job de reconciliação crontab × catálogo.
 
-Diferente do `load_catalog`: **não escreve catálogo**. Lê o estado persistido,
-compara com uma coleta fresca do host e grava um `reconciliation_run` com as
-divergências. É o job que responde ao critério de aceite da Etapa 1.1 —
+Diferente do `load_catalog`: **não escreve catálogo** — job, agenda e contrato
+são só lidos. Lê o estado persistido, compara com uma coleta fresca do host e
+grava um `reconciliation_run` com as divergências.
+
+A única escrita é o avanço da máquina de estados de `crontab_change_request`
+(`verified`, `expired`). Não é exceção à regra, é o oposto dela: o reconciler
+não altera o que o catálogo *afirma*, ele registra o que *observou* sobre uma
+mudança que já estava pedida. Se ele pudesse mexer no job, consertaria a
+divergência que deveria reportar. É o job que responde ao critério de aceite da Etapa 1.1 —
 "relatório de reconciliação sem divergências não explicadas" — e por isso ele
 distingue divergência ABERTA de divergência EXPLICADA: o fingerprint carrega a
 explicação dada na execução anterior.
@@ -32,7 +38,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..build import BuildResult, JobRecord, Severity
-from .models import Job, JobContractVersion, JobSchedule, ReconciliationFinding, ReconciliationRun
+from .models import (
+    CrontabChangeRequest,
+    CrontabSnapshot,
+    Job,
+    JobContractVersion,
+    JobSchedule,
+    ReconciliationFinding,
+    ReconciliationRun,
+)
 from .repository import TRACKED_FIELDS, _audit, _fingerprint, _group_jobs, _job_status
 
 # Campos de agenda cuja divergência importa. `log_path` e `raw_line` ficam de
@@ -52,6 +66,9 @@ class Divergence:
 @dataclass
 class ReconcileReport:
     host: str
+    changes_verified: int = 0
+    changes_expired: int = 0
+    changes_open: int = 0
     run_id: str | None = None
     jobs_in_catalog: int = 0
     jobs_in_crontab: int = 0
@@ -77,7 +94,10 @@ def reconcile(
     source: str = "cli",
     dry_run: bool = False,
 ) -> ReconcileReport:
-    """Compara a coleta com o catálogo persistido. Não altera o catálogo."""
+    """Compara a coleta com o catálogo persistido.
+
+    Não altera job/agenda/contrato; só avança change requests já abertas.
+    """
     report = ReconcileReport(host=result.host)
     now = datetime.now(timezone.utc)
 
@@ -91,12 +111,24 @@ def reconcile(
 
     divergences: list[Divergence] = []
 
+    # Mudanças em andamento: sem elas, `catálogo ≠ crontab` é ambíguo entre
+    # "mudança aguardando aplicação" e "alguém editou o crontab por fora".
+    abertas = {
+        req.job_id: req
+        for req in session.scalars(
+            select(CrontabChangeRequest)
+            .where(CrontabChangeRequest.host == result.host,
+                   CrontabChangeRequest.state.in_(("pending", "applied")))
+            .execution_options(populate_existing=True)
+        )
+    }
+
     for key, records in collected.items():
         job = catalog_jobs.get(key)
         if job is None:
             _ghost(key, records, divergences)
             continue
-        _diff_metadata(job, records, key, divergences)
+        _diff_metadata(job, records, key, divergences, abertas.get(job.id))
         _diff_contract(job, records, session, divergences)
         _diff_schedules(job, records, session, divergences)
 
@@ -118,9 +150,93 @@ def reconcile(
         divergences.append(Divergence(
             finding.kind, finding.severity, finding.subject, finding.detail))
 
+    ultimo_snapshot = session.scalar(
+        select(CrontabSnapshot.id)
+        .where(CrontabSnapshot.host == result.host)
+        .order_by(CrontabSnapshot.captured_at.desc())
+        .limit(1)
+    )
+    _close_change_requests(
+        result, session, report, divergences, abertas, collected, catalog_jobs,
+        snapshot_id=ultimo_snapshot, now=now,
+    )
+
     report.divergences = divergences
     _store(result, session, report, divergences, actor, source, now, dry_run)
     return report
+
+
+def _close_change_requests(
+    result: BuildResult,
+    session: Session,
+    report: ReconcileReport,
+    out: list[Divergence],
+    abertas: dict,
+    collected: dict,
+    catalog_jobs: dict,
+    *,
+    snapshot_id,
+    now: datetime,
+) -> None:
+    """Fecha o loop: verifica o que foi aplicado, expira o que venceu.
+
+    A verificação é por DETECÇÃO, não por declaração do operador — exigir que
+    ele volte à UI dizer "apliquei" é o passo que na prática ninguém faz. O
+    marcador `#BO:<job>:<change>` na linha é confirmação adicional quando está
+    presente, nunca requisito: o que decide é o estado observado bater com o
+    desejado.
+    """
+    observado: dict = {}
+    marcadores: dict = {}
+    for key, records in collected.items():
+        job = catalog_jobs.get(key)
+        if job is None:
+            continue
+        observado[job.id] = _job_status(records)
+        for r in records:
+            if getattr(r, "bo_change_id", None):
+                marcadores[job.id] = r.bo_change_id
+
+    for job_id, req in abertas.items():
+        estado = observado.get(job_id)
+        if estado is None:
+            report.changes_open += 1
+            continue
+
+        if estado == req.desired_status:
+            req.state = "verified"
+            req.verified_at = now
+            req.verified_snapshot_id = snapshot_id
+            report.changes_verified += 1
+            confirmacao = ("marcador presente na linha"
+                           if marcadores.get(job_id) == str(req.id)
+                           else "sem marcador; estado observado bate com o desejado")
+            out.append(Divergence(
+                "mudanca-verificada", Severity.INFO,
+                catalog_jobs and next(
+                    (j.process_name for j in catalog_jobs.values() if j.id == job_id), str(job_id)),
+                f"change_request {req.id} aplicada: crontab agora diz "
+                f"'{estado}' ({confirmacao})",
+                job_id,
+            ))
+            continue
+
+        # Continua divergente. Vencida?
+        if req.expires_at is not None and req.expires_at <= now and req.state == "pending":
+            req.state = "expired"
+            report.changes_expired += 1
+            out.append(Divergence(
+                "mudanca-pendente-vencida", Severity.ERROR,
+                next((j.process_name for j in catalog_jobs.values() if j.id == job_id),
+                     str(job_id)),
+                f"change_request {req.id} pedida em {req.requested_at:%Y-%m-%d} e nao aplicada "
+                f"ate {req.expires_at:%Y-%m-%d}; o cron NAO parou — o job segue disparando",
+                job_id,
+            ))
+        else:
+            report.changes_open += 1
+
+    session.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +258,10 @@ def _ghost(key, records: list[JobRecord], out: list[Divergence]) -> None:
     ))
 
 
-def _diff_metadata(job: Job, records: list[JobRecord], key, out: list[Divergence]) -> None:
+def _diff_metadata(
+    job: Job, records: list[JobRecord], key, out: list[Divergence],
+    change: CrontabChangeRequest | None = None,
+) -> None:
     reference = records[0]
     _, contract_path = key
     observed = {
@@ -163,11 +282,29 @@ def _diff_metadata(job: Job, records: list[JobRecord], key, out: list[Divergence
             current = list(current)
         if current == observed[field_name]:
             continue
-        # Status é decisão operacional (habilitar/desabilitar job); divergir
-        # dele significa que alguém mexeu no crontab sem passar pela API.
-        severity = Severity.ERROR if field_name == "status" else Severity.WARNING
+        if field_name == "status":
+            # Divergência de status tem duas leituras opostas, e a change_request
+            # é o que as separa: mudança pedida e ainda não aplicada é esperada;
+            # sem request, alguém editou o crontab fora do fluxo.
+            if change is not None and change.desired_status == current:
+                out.append(Divergence(
+                    "mudanca-em-andamento", Severity.INFO, job.process_name,
+                    f"change_request {change.id} ({change.state}): catalogo ja diz "
+                    f"'{current}', crontab ainda diz '{observed[field_name]}' — "
+                    f"o cron so para quando a linha for aplicada",
+                    job.id,
+                ))
+            else:
+                out.append(Divergence(
+                    "drift-nao-gerenciado", Severity.ERROR, job.process_name,
+                    f"status: catalogo={current!r}, coleta={observed[field_name]!r} "
+                    "e nenhuma change_request aberta explica a diferenca",
+                    job.id,
+                ))
+            continue
+
         out.append(Divergence(
-            "metadado-divergente", severity, job.process_name,
+            "metadado-divergente", Severity.WARNING, job.process_name,
             f"{field_name}: catalogo={current!r}, coleta={observed[field_name]!r}",
             job.id,
         ))

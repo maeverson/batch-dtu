@@ -14,7 +14,7 @@ Regras que vêm do inventário real e não podem ser perdidas:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 # 5 campos de agenda, ou macro @daily/@reboot/...
@@ -49,6 +49,11 @@ class CronEntry:
     log_path: str | None = None
     inline_comment: str | None = None
     status_reason: str | None = None   # prosa dos comentários acima da entrada
+    # Marcador estruturado do Back Office: `#BO:<job_id>:<change_id>`. É a
+    # âncora que deixa a reconciliação distinguir mudança em andamento de drift
+    # não gerenciado — sem ele, os dois casos são indistinguíveis no crontab.
+    bo_job_id: str | None = None
+    bo_change_id: str | None = None
     env_name: str | None = None
     env_value: str | None = None
     reason: str | None = None         # por que ficou unparsed
@@ -59,10 +64,28 @@ class CronEntry:
         return self.kind in (EntryKind.JOB, EntryKind.MAINTENANCE)
 
 
+# `#BO:<job_id>:<change_id>` — escrito pelo operador ao aplicar uma mudança
+# emitida pelo Back Office. Substitui a prosa livre que o parque já usa hoje
+# ("queda comentado debido a que...") por uma âncora que aponta para o motivo
+# registrado no catálogo.
+_BO_MARKER = re.compile(
+    r"^BO:(?P<job>[0-9a-fA-F-]{36}):(?P<change>[0-9a-fA-F-]{36})\b\s*(?P<reason>.*)$"
+)
+
+
+def _com_marcador(entry: CronEntry, marcador: tuple[str, str] | None) -> CronEntry:
+    """Devolve a entrada com o marcador pendente aplicado. `CronEntry` é frozen:
+    a coleta é registro do que foi lido, não objeto mutável."""
+    if marcador is None:
+        return entry
+    return replace(entry, bo_job_id=marcador[0], bo_change_id=marcador[1])
+
+
 def parse_crontab(text: str, source: str = "crontab") -> list[CronEntry]:
     """Converte o texto de um crontab na sequência completa de entradas."""
     entries: list[CronEntry] = []
     pending_prose: list[str] = []
+    pending_marker: tuple[str, str] | None = None
 
     for lineno, raw in enumerate(text.splitlines(), start=1):
         if raw.startswith("### source="):  # cabeçalho inserido pelo desempacotador
@@ -77,6 +100,18 @@ def parse_crontab(text: str, source: str = "crontab") -> list[CronEntry]:
 
         if stripped.startswith("#"):
             body = stripped.lstrip("#").strip()
+            if (marcador := _BO_MARKER.match(body)) is not None:
+                # Marcador é metadado, não prosa: não entra em `status_reason`
+                # (o motivo canônico vive no catálogo), mas fica pendente para
+                # a próxima entrada agendável — comentada ou não.
+                pending_marker = (marcador.group("job"), marcador.group("change"))
+                if marcador.group("reason"):
+                    pending_prose.append(marcador.group("reason"))
+                entries.append(
+                    CronEntry(source, lineno, raw, EntryKind.COMMENT, inline_comment=body,
+                              bo_job_id=pending_marker[0], bo_change_id=pending_marker[1])
+                )
+                continue
             embedded = _find_schedule_in_comment(body) if _LOOKS_LIKE_COMMAND.search(body) else None
             if embedded is not None:
                 inline_reason, remainder = embedded
@@ -87,10 +122,12 @@ def parse_crontab(text: str, source: str = "crontab") -> list[CronEntry]:
                     source, lineno, raw, remainder, enabled=False,
                     status_reason="\n".join(reasons) or None,
                 )
-                entries.append(entry)
+                entries.append(_com_marcador(entry, pending_marker))
+                pending_marker = None
                 pending_prose.clear()
             elif (on_demand := _on_demand_job(source, lineno, raw, body, pending_prose)) is not None:
-                entries.append(on_demand)
+                entries.append(_com_marcador(on_demand, pending_marker))
+                pending_marker = None
                 pending_prose.clear()
             else:
                 entries.append(
@@ -114,12 +151,12 @@ def parse_crontab(text: str, source: str = "crontab") -> list[CronEntry]:
             continue
 
         if _parse_schedule(stripped):
-            entries.append(
-                _build_scheduled(
-                    source, lineno, raw, stripped, enabled=True,
-                    status_reason="\n".join(pending_prose) or None,
-                )
+            ativa = _build_scheduled(
+                source, lineno, raw, stripped, enabled=True,
+                status_reason="\n".join(pending_prose) or None,
             )
+            entries.append(_com_marcador(ativa, pending_marker))
+            pending_marker = None
             pending_prose.clear()
             continue
 

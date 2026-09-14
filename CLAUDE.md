@@ -73,7 +73,7 @@ Consequências práticas:
 | `docs/` | Visão geral, princípios, contrato JSON, modelo de dados, segurança, observabilidade, migração, riscos |
 | `docs/adr/` | Decisões abertas (ADR-001 a 004) e template |
 | `docs/api/` | Contrato REST da Platform API (rascunho OpenAPI) |
-| `modules/<módulo>/` | `CLAUDE.md` (contexto do módulo) + `SPEC.md` (requisitos e critérios de aceite) |
+| `modules/<módulo>/` | `CLAUDE.md` (contexto do módulo) + `SPEC.md` (requisitos e critérios de aceite); módulos com código implementado também têm `OPERACAO.md` (referência de uso) |
 | `backlog/` | Backlog e critérios de aceite por fase |
 
 ## Glossário rápido

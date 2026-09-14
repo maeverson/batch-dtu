@@ -159,3 +159,63 @@ def test_on_demand_com_log_e_motivo():
 def test_comentario_com_script_fora_de_schedulers_nao_vira_job():
     entry = parse_crontab("#/home/batch_user/scripts/clean_empty_folders.sh\n")[0]
     assert entry.kind is EntryKind.COMMENT
+
+
+# --- marcador do Back Office -------------------------------------------------
+
+JOB_ID = "6b0a1f2e-6a1e-4a3e-9d2f-0c8b7a5e4d31"
+CHANGE_ID = "f1e2d3c4-b5a6-4978-8a9b-0c1d2e3f4a5b"
+
+
+def test_marcador_bo_liga_linha_ao_change_request():
+    """A âncora que a reconciliação usa para fechar o loop.
+
+    Sem ela, `catálogo diz desabilitado / crontab diz ativo` é indistinguível de
+    alguém editando o crontab por fora — e os dois casos exigem resposta oposta.
+    """
+    texto = (
+        f"#BO:{JOB_ID}:{CHANGE_ID} desabilitado a pedido do cliente\n"
+        "#00 02 * * * /fw/schedulers/otros/prd_aaa_col_otr.sh >> /fw/logs/x.log\n"
+    )
+    entradas = parse_crontab(texto, source="user-batch")
+    agendada = [e for e in entradas if e.is_schedulable]
+    assert len(agendada) == 1
+    assert agendada[0].enabled is False
+    assert agendada[0].bo_job_id == JOB_ID
+    assert agendada[0].bo_change_id == CHANGE_ID
+
+
+def test_marcador_vale_para_linha_ativa():
+    texto = (
+        f"#BO:{JOB_ID}:{CHANGE_ID} reativado apos janela\n"
+        "00 02 * * * /fw/schedulers/otros/prd_aaa_col_otr.sh >> /fw/logs/x.log\n"
+    )
+    agendada = [e for e in parse_crontab(texto) if e.is_schedulable]
+    assert agendada[0].enabled is True
+    assert agendada[0].bo_change_id == CHANGE_ID
+
+
+def test_motivo_do_marcador_entra_como_razao_mas_o_marcador_nao():
+    """O motivo canônico vive no catálogo; o crontab guarda a âncora."""
+    texto = (
+        f"#BO:{JOB_ID}:{CHANGE_ID} cliente suspendeu o contrato\n"
+        "#00 02 * * * /fw/schedulers/otros/prd_aaa_col_otr.sh\n"
+    )
+    agendada = [e for e in parse_crontab(texto) if e.is_schedulable][0]
+    assert "cliente suspendeu o contrato" in (agendada.status_reason or "")
+    assert "BO:" not in (agendada.status_reason or "")
+
+
+def test_linha_sem_marcador_nao_inventa_change_id():
+    texto = "00 02 * * * /fw/schedulers/otros/prd_aaa_col_otr.sh\n"
+    agendada = [e for e in parse_crontab(texto) if e.is_schedulable][0]
+    assert agendada.bo_job_id is None and agendada.bo_change_id is None
+
+
+def test_prosa_livre_parecida_com_marcador_nao_e_marcador():
+    """`# BO vai desabilitar isso` é prosa, não âncora."""
+    texto = ("# BO vai desabilitar isso semana que vem\n"
+             "00 02 * * * /fw/schedulers/otros/prd_aaa_col_otr.sh\n")
+    agendada = [e for e in parse_crontab(texto) if e.is_schedulable][0]
+    assert agendada.bo_change_id is None
+    assert "BO vai desabilitar" in (agendada.status_reason or "")

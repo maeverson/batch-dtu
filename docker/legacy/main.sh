@@ -4,7 +4,12 @@
 # precisa exercitar, e nada além disso:
 #
 #   * mesmas flags: --process-file, --manual-steps, --dates-pattern-files,
-#     --validate-file, --no-mail (+ --execution-id, que a plataforma injeta)
+#     --validate-file, --no-mail
+#
+# NAO conhece --execution-id, de proposito: o main.sh REAL trata flag
+# desconhecida como fatal ("Opcion desconocida" -> main_help -> exit). Um stub
+# mais permissivo que o original faria a suite passar aqui e toda execucao
+# falhar em UAT. Quem nomeia o log por execution_id e o batch-wrapper.sh.
 #   * steps sequenciais com `stop_on_failed` por step
 #   * placeholders de data resolvidos contra a data-alvo
 #   * log com o `execution_id` no nome do arquivo
@@ -29,7 +34,6 @@ while [ $# -gt 0 ]; do
         --process-file)          PROCESS_FILE=${2:-}; shift 2 ;;
         --manual-steps)          MANUAL_STEPS=${2:-}; shift 2 ;;
         --dates-pattern-files)   DATES=${2:-}; shift 2 ;;
-        --execution-id)          EXECUTION_ID=${2:-}; shift 2 ;;
         --no-mail)               NO_MAIL=1; shift ;;
         --validate-file)         VALIDATE_ONLY=1; shift ;;
         *) printf 'flag desconhecida: %s\n' "$1" >&2; exit 2 ;;
@@ -41,7 +45,7 @@ done
 
 PROCESS_NAME=$(basename "$PROCESS_FILE" .json)
 DOMAIN=$(basename "$(dirname "$PROCESS_FILE")")
-[ -n "$EXECUTION_ID" ] || EXECUTION_ID="local-$(date -u +%Y%m%d%H%M%S)-$$"
+EXECUTION_ID="local-$(date -u +%Y%m%d%H%M%S)-$$"
 
 LOG_DIR="$LOG_ROOT/schedulers/$DOMAIN"
 mkdir -p "$LOG_DIR" 2>/dev/null

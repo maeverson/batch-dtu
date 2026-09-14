@@ -178,8 +178,39 @@ def test_stop_on_failed_interrompe_o_job(framework, tmp_path):
     assert "step=2" not in result.stdout
 
 
+def test_main_sh_nao_conhece_execution_id(framework):
+    """O `main.sh` REAL trata flag desconhecida como fatal ("Opcion desconocida"
+    -> main_help -> exit). O stub precisa ser igualmente restritivo: um stub
+    mais permissivo que o original faria a suíte passar aqui e TODA execução
+    falhar em UAT."""
+    result = run_main(framework, "--process-file", contract(framework),
+                      "--execution-id", "7f3c1a90-dead-4000-8000-000000000009", "--no-mail")
+    assert result.returncode == 2
+    assert "flag desconhecida" in result.stderr
+
+
 def test_execution_id_vai_no_nome_do_log(framework):
-    run_main(framework, "--process-file", contract(framework),
-             "--execution-id", "abc-123", "--manual-steps", "1", "--no-mail")
+    """A correlação nasce no wrapper, não no legado: ele controla o
+    redirecionamento e nomeia o arquivo por `execution_id` sem que o `main.sh`
+    precise saber que o identificador existe."""
+    run_wrapper(
+        framework,
+        f"{framework}/main.sh --process-file {contract(framework)} "
+        "--execution-id 7f3c1a90-dead-4000-8000-000000000009 --manual-steps 1 --no-mail",
+    )
     logs = list((framework / "logs").rglob("*.log"))
-    assert any("abc-123" in p.name for p in logs), [p.name for p in logs]
+    assert any("7f3c1a90-dead" in p.name for p in logs), [p.name for p in logs]
+
+
+def test_wrapper_nao_repassa_execution_id_ao_legado(framework):
+    """Se repassasse, o main.sh real abortaria antes de executar qualquer step."""
+    run_wrapper(
+        framework,
+        f"{framework}/main.sh --process-file {contract(framework)} "
+        "--execution-id 7f3c1a90-dead-4000-8000-000000000456 --manual-steps 1 --no-mail",
+    )
+    bo_log = next((p for p in (framework / "logs").rglob("*000000000456*.log")), None)
+    assert bo_log is not None, "wrapper nao gravou o log correlacionado"
+    # O job rodou de verdade: o stub registra o step no proprio log.
+    assert "step" in bo_log.read_text().lower() or "execution_id" in bo_log.read_text()
+    assert "flag desconhecida" not in bo_log.read_text()

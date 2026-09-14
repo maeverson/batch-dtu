@@ -66,6 +66,10 @@ class JobRecord:
     log_path: str | None
     cron_source: str | None
     cron_lineno: int | None
+    # Marcador `#BO:<job>:<change>` lido da linha do crontab. É a confirmação
+    # explícita de que a mudança aplicada foi a que a plataforma pediu.
+    bo_job_id: str | None = None
+    bo_change_id: str | None = None
     connection_aliases: tuple[str, ...] = ()
     # Destino downstream de `upload_remote`/`download_remote`, resolvido pelo
     # jump SFTP — não é alias local. Para a Fase 3 é o "a quem este job entrega".
@@ -143,6 +147,18 @@ def build_catalog(package: SeedPackage, vocab: Vocabulary) -> BuildResult:
     # 4. um JobRecord por entrada de cron que aponta para wrapper do framework
     jobs: list[JobRecord] = []
     referenced_contracts: set[str] = set()
+    # Um job pode ter mais de uma entrada no crontab (relatório trimestral com
+    # 4 linhas, por exemplo — ver naming.py). Achados sobre o CONTEÚDO do
+    # arquivo (contrato inválido, JSON quebrado) são propriedade do arquivo,
+    # não da entrada de cron: sem dedupe por `contract_ref`, o mesmo defeito
+    # vira um finding por entrada — `uat_dal_col_ebc` (2 entradas) reportava
+    # a mesma violação de schema duas vezes.
+    contratos_validados: set[str] = set()
+    # `contrato-ausente` depende de `entry.enabled` (severidade e mensagem
+    # mudam), então o dedupe é por (contrato, habilitado) — uma entrada ativa
+    # e outra desabilitada apontando pro mesmo contrato ausente são dois fatos
+    # distintos, não a mesma linha reportada de novo.
+    contratos_ausentes_vistos: set[tuple[str, bool]] = set()
     timezone = package.timezone
 
     for entry in cron_entries:
@@ -179,14 +195,16 @@ def build_catalog(package: SeedPackage, vocab: Vocabulary) -> BuildResult:
         if not invocations:
             jobs.append(
                 _job_from_parts(entry, None, None, domain, timezone, vocab, contracts,
-                                referenced_contracts, findings)
+                                referenced_contracts, findings,
+                                contratos_validados, contratos_ausentes_vistos)
             )
             continue
 
         for invocation in invocations:
             jobs.append(
                 _job_from_parts(entry, invocation, invocation.process_file, domain,
-                                timezone, vocab, contracts, referenced_contracts, findings)
+                                timezone, vocab, contracts, referenced_contracts, findings,
+                                contratos_validados, contratos_ausentes_vistos)
             )
 
     # 5. contratos em disco que nenhum job referencia
@@ -228,6 +246,8 @@ def _job_from_parts(
     contracts: dict[str, Path],
     referenced: set[str],
     findings: list[Finding],
+    validados: set[str] | None = None,
+    ausentes_vistos: set[tuple[str, bool]] | None = None,
 ) -> JobRecord:
     wrapper_path = entry.script_path
     process_name = Path(wrapper_path).stem if wrapper_path else "desconhecido"
@@ -240,38 +260,50 @@ def _job_from_parts(
     if contract_ref:
         referenced.add(contract_ref)
         local = contracts.get(contract_ref)
+        chave_ausente = (contract_ref, entry.enabled)
+        ja_ausente = ausentes_vistos is not None and chave_ausente in ausentes_vistos
+        ja_validado = validados is not None and contract_ref in validados
+        if ausentes_vistos is not None:
+            ausentes_vistos.add(chave_ausente)
+        if validados is not None:
+            validados.add(contract_ref)
+
         if local is None:
-            findings.append(
-                Finding("contrato-ausente",
-                        Severity.ERROR if entry.enabled else Severity.WARNING,
-                        f"{entry.source}:{entry.lineno}",
-                        f"{process_name} -> {contract_ref} nao existe"
-                        + (" (job ATIVO)" if entry.enabled else " (job desabilitado)"))
-            )
+            if not ja_ausente:
+                findings.append(
+                    Finding("contrato-ausente",
+                            Severity.ERROR if entry.enabled else Severity.WARNING,
+                            f"{entry.source}:{entry.lineno}",
+                            f"{process_name} -> {contract_ref} nao existe"
+                            + (" (job ATIVO)" if entry.enabled else " (job desabilitado)"))
+                )
             flags.append("contrato-ausente")
         else:
             contract_hash = sha256_file(local)
             contract_bytes = local.stat().st_size
             facts = _inspect_contract(local)
             if facts.error:
-                findings.append(
-                    Finding("contrato-json-invalido", Severity.ERROR, contract_ref, facts.error)
-                )
+                if not ja_validado:
+                    findings.append(
+                        Finding("contrato-json-invalido", Severity.ERROR, contract_ref, facts.error)
+                    )
                 flags.append("json-invalido")
             if facts.validation is not None:
                 # Contrato inválido NÃO bloqueia o import (Policy.LEGACY): o
                 # catálogo registra o parque como ele é. Vira finding para que
-                # a reconciliação cobre a correção.
-                for violation in facts.validation.errors:
-                    findings.append(
-                        Finding("contrato-invalido", Severity.ERROR, contract_ref,
-                                f"{violation.path}: {violation.message}")
-                    )
-                for violation in facts.validation.warnings:
-                    findings.append(
-                        Finding("contrato-com-aviso", Severity.WARNING, contract_ref,
-                                f"{violation.path}: {violation.message}")
-                    )
+                # a reconciliação cobre a correção. Emitido uma vez por
+                # CONTRATO (não por entrada de cron que o referencia).
+                if not ja_validado:
+                    for violation in facts.validation.errors:
+                        findings.append(
+                            Finding("contrato-invalido", Severity.ERROR, contract_ref,
+                                    f"{violation.path}: {violation.message}")
+                        )
+                    for violation in facts.validation.warnings:
+                        findings.append(
+                            Finding("contrato-com-aviso", Severity.WARNING, contract_ref,
+                                    f"{violation.path}: {violation.message}")
+                        )
                 if facts.validation.errors:
                     flags.append("schema-invalido")
             if facts.schema_version is None and not facts.error:
@@ -339,6 +371,8 @@ def _job_from_parts(
         log_path=entry.log_path,
         cron_source=entry.source,
         cron_lineno=entry.lineno,
+        bo_job_id=entry.bo_job_id,
+        bo_change_id=entry.bo_change_id,
         connection_aliases=facts.aliases,
         remote_targets=facts.remote_targets,
         step_functions=facts.functions,
