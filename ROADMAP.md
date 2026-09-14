@@ -42,25 +42,51 @@ Fundação de tudo: catálogo como fonte da verdade.
 
 ### Etapa 1.2 — `platform-api`
 
-- [ ] Autenticação Entra ID (OIDC) + RBAC (`batch.viewer/operator/operator-prod/admin`) com escopo domínio/ambiente — com UAT no catálogo, `operator-prod` passa a ter contraparte real e a distinção deixa de ser teórica
+- [x] Autenticação Entra ID (OIDC) + RBAC (`batch.viewer/operator/operator-prod/admin`) com escopo domínio/ambiente
   - [x] **Decidido**: stack Python/FastAPI; escopo em `role_binding` no catálogo (não em grupos do Entra); deploy em EKS com VPC até os hosts
   - [x] Tabela `role_binding` (escopo domínio/ambiente/host; `NULL` = todas)
-  - [ ] Middleware OIDC + resolução de escopo por job (falta: tenant/client id e qual claim carrega as roles)
-- [ ] Interface `ExecutionBackend` + implementação Fase 1 (SSH parametrizado via `backoffice_svc` + wrapper `command=`)
-- [ ] Endpoints de catálogo (busca/filtro, validação, enable/disable com reason)
+  - [x] Middleware OIDC contra Keycloak local, verificado com token real (achado e corrigido: o access
+    token do Keycloak não tinha `aud` — mapper de audience adicionado ao realm) — troca para Entra
+    real é só `OIDC_ISSUER`/`OIDC_AUDIENCE`/`OIDC_ROLES_CLAIM` (falta tenant/client id do Entra real)
+- [x] Interface `ExecutionBackend` + implementação Fase 1 (SSH parametrizado via `backoffice_svc` +
+  wrapper `command=`) — `build_invocation()` fuzz-testado e confirmado byte-a-byte contra o
+  `docker/legacy/batch-wrapper.sh` **real** (achado e corrigido: o wrapper repassava
+  `--execution-id` ao `main.sh`, que trata flag desconhecida como fatal — toda execução via API
+  teria abortado; a correlação agora nasce no wrapper, sem tocar o legado)
+- [x] Endpoints de catálogo (busca/filtro, validação, enable/disable com reason)
   - [x] Ciclo de mudança de agendamento modelado: `crontab_change_request` (`pending` → `applied` → `verified`, + `cancelled`/`expired`), marcador `#BO:<job>:<change>` parseado do crontab, e reconciliação que **fecha o loop por detecção** — verifica o aplicado, acusa `drift-nao-gerenciado` sem request, e expira pendência vencida porque o cron não para sozinho
-- [ ] Endpoint de execução manual (steps, dates_pattern, pré-validação, confirmação de data-alvo)
-- [ ] Reprocesso multi-data com serialização + lock por processo
-- [ ] Auditoria automática (`audit_event`) em toda ação de escrita
+- [x] Endpoint de execução manual (steps, dates_pattern, pré-validação sempre via `--validate-file`,
+  confirmação de data-alvo + confirmação reforçada real para `upload_remote` em PROD)
+- [x] Reprocesso multi-data com serialização + lock por processo — `pg_try_advisory_xact_lock`
+  não-bloqueante (409 imediato, não fila); múltiplas datas viram uma invocação só, serializada
+  pelo próprio `main.sh`
+- [x] Auditoria automática (`audit_event`) em toda ação de escrita — testado contra Postgres real
 
-**Entrega verificável**: execução manual de um job de teste em UAT via `curl`, com registro de auditoria.
+**Entrega verificável**: execução manual de um job de teste em UAT via `curl`, com registro de auditoria —
+**pendente**: exige o container `docker/legacy` de pé (não builda neste ambiente de desenvolvimento;
+roda numa máquina com rede irrestrita) ou acesso real ao host. Toda a cadeia até o SSH está testada
+e verificada (`modules/platform-api/OPERACAO.md`); falta só o SSH de ponta a ponta.
 **Desbloqueia**: `back-office` (bloqueante) e `observability` 1.3 (parcial — pode iniciar em paralelo assim que `execution_id` existir).
 
 ### Etapa 1.3 — `observability` (entregas da Fase 1) — *paralelo com 1.4*
 
-- [ ] Injeção de `execution_id` no nome dos arquivos de log
-- [ ] Link auditoria → stream Loki por `execution_id`
-- [ ] Painel de execuções manuais (Grafana)
+- [x] Injeção de `execution_id` no nome dos arquivos de log — já nascia da 1.2 (`docker/legacy/batch-wrapper.sh`
+  passo 6: `$BO_LOG_DIR/${PROC_NAME}.${EXECUTION_ID}.log`), testado em
+  `tests/test_legacy_wrapper.py::test_execution_id_vai_no_nome_do_log`; só faltava marcar aqui
+- [x] Link auditoria → stream Loki por `execution_id` — `docker/promtail/config.yaml` (novo serviço `promtail`,
+  profile `legacy`/`all`) tateia `logs/backoffice/<domínio>/*.log` do host legado simulado e extrai
+  `domain`/`process`/`execution_id` do **nome do arquivo** como labels do stream — o mesmo seletor que
+  `GET /executions/{id}/logs` já consultava (`src/platform_api/routers/executions.py`, implementado na 1.2).
+  **Pendente**: verificação ponta a ponta (wrapper → promtail → Loki) depende do container `docker/legacy` de
+  pé, que **não builda neste ambiente de desenvolvimento** — mesmo bloqueio já registrado na 1.2; regex de
+  extração validada contra a convenção real de nome de arquivo, config validada por `docker compose config`
+- [x] Painel de execuções manuais (Grafana) — dashboard `docker/grafana/dashboards/execucoes-manuais.json`
+  (datasource Postgres novo em `docker/grafana/provisioning/datasources/datasources.yaml`, direto em
+  `catalog.execution`/`catalog.job`): contagem e taxa de sucesso do período, execuções por hora por status,
+  tabela das últimas execuções manuais com `execution_id` para cruzar com o log. Verificado de ponta a ponta
+  neste ambiente: datasource conectado (`/api/datasources/uid/postgres/health`), dashboard provisionado,
+  consultas testadas com execução sintética inserida e removida em `catalog.execution` (não depende do
+  host legado — só do Postgres, que roda aqui)
 
 ### Etapa 1.4 — `back-office` — *paralelo com 1.3*
 

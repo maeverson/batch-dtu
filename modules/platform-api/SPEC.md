@@ -31,7 +31,19 @@ API REST que abstrai o mecanismo de execução e concentra autenticação, autor
 
 ## Critérios de aceite
 
-- [ ] Contrato REST estável validado por testes de contrato (a UI não quebra ao trocar backend).
-- [ ] Nenhum caminho de código concatena entrada do usuário em comando shell (teste estático + revisão).
-- [ ] 100% das ações de escrita com `audit_event` correspondente.
-- [ ] Reprocesso Zinli/MFTech fim-a-fim via API (marco de validação da Fase 1).
+- [x] Contrato REST estável validado por testes de contrato (a UI não quebra ao trocar backend) —
+  `tests/test_platform_api_contract.py`: paths documentados presentes no app, schema de
+  `ExecutionOut` fixo independente de qual `ExecutionBackend` está por trás.
+- [x] Nenhum caminho de código concatena entrada do usuário em comando shell (teste estático +
+  revisão) — varredura AST por `os.system`/`subprocess.*`/`eval`/`exec` em todo `src/platform_api/`
+  (nenhum chama shell local; `asyncssh` é a única via de execução remota, isolada em
+  `ssh_backend.py`), `build_invocation()` fuzz-testado contra o mesmo denylist do wrapper, e
+  confirmado byte-a-byte contra o `docker/legacy/batch-wrapper.sh` REAL
+  (`tests/test_platform_api_ssh_integration.py`).
+- [x] 100% das ações de escrita com `audit_event` correspondente — `job.status_change`,
+  `execution.dispatch`/`execution.completed`, `change_request.cancel`; testado contra Postgres
+  real.
+- [ ] Reprocesso Zinli/MFTech fim-a-fim via API (marco de validação da Fase 1) — depende de acesso
+  real ao host (`172.17.37.120`) ou do container `docker/legacy` (que não builda neste ambiente de
+  desenvolvimento — o CDN de pacotes da imagem base não está no allowlist de rede; roda normalmente
+  numa máquina com acesso irrestrito). Ver `modules/platform-api/OPERACAO.md`.

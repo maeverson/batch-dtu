@@ -17,6 +17,12 @@ Monitorar execuções/logs sem `execution_id` conhecido (agendas fora do catálo
 
 ## Critérios de aceite
 
-- [ ] Toda execução via plataforma localizável no Loki por `execution_id`.
+- [x] Toda execução via plataforma localizável no Loki por `execution_id` — `docker/promtail/config.yaml`
+  embarca `logs/backoffice/<domínio>/<processo>.<execution_id>.log` (nome gravado pelo
+  `batch-wrapper.sh`) para o Loki com `execution_id` como label de stream; `GET /executions/{id}/logs`
+  já consulta por esse seletor. Verificação ponta a ponta pendente do container `docker/legacy` (não
+  builda neste ambiente — ver ROADMAP Etapa 1.3).
+- [x] Painel de execuções manuais — `docker/grafana/dashboards/execucoes-manuais.json`, verificado
+  contra o Postgres real deste ambiente (ver ROADMAP Etapa 1.3).
 - [ ] Alerta de ausência disparando em simulação de execução perdida (Fase 3).
-- [ ] Dashboard realizado × esperado alimentado pelo catálogo.
+- [ ] Dashboard realizado × esperado alimentado pelo catálogo (Fase 3).

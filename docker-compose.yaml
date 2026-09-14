@@ -104,7 +104,26 @@ services:
       - "${GRAFANA_PORT:-3000}:3000"
     volumes:
       - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
+    depends_on:
+      loki:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+
+  # Embarca para o Loki o log de execução correlacionado por `execution_id`
+  # que o wrapper do host legado grava (observability, Etapa 1.3). Só faz
+  # sentido junto do host legado simulado — mesmo profile.
+  promtail:
+    <<: *restart
+    image: grafana/promtail:3.3.2
+    container_name: batch-promtail
+    profiles: [legacy, all]
+    command: -config.file=/etc/promtail/config.yaml
+    volumes:
+      - ./docker/promtail/config.yaml:/etc/promtail/config.yaml:ro
+      - legacy-logs:/var/log/legacy:ro
     depends_on:
       loki:
         condition: service_started

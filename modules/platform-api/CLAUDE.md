@@ -32,6 +32,9 @@ sempre restringe, nunca amplia.
 
 Na Fase 2 o executor do apply deixa de ser humano e vira pipeline; a máquina de estados sobrevive.
 
+**Operação do serviço**: `OPERACAO.md` neste diretório — como subir, autenticar, conceder
+`role_binding`, os endpoints, e como verificar sem depender do container `legacy`.
+
 Contexto ao trabalhar aqui:
 - Leia `../../docs/api/platform-api.md` (contrato REST) e `../../docs/contrato-json.md` antes de qualquer implementação.
 - **O contrato REST não muda entre fases** — só o backend de execução (Fase 1: SSH parametrizado; Fase 2: enfileiramento no orchestrator). Isole o backend atrás de uma interface (`ExecutionBackend`) desde o dia 1.

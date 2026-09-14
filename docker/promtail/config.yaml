@@ -1,0 +1,36 @@
+# Promtail de desenvolvimento — espelho do agente real do Grafana Cloud
+# (docs/observabilidade.md: "Promtail → Loki ... permanece").
+#
+# O que ele embarca para o Loki, na Fase 1, é só o log correlacionado por
+# `execution_id` que o `docker/legacy/batch-wrapper.sh` já grava em
+# `$FW_ROOT/logs/backoffice/<domain>/<process>.<execution_id>.log` — cada
+# arquivo é uma execução, então `execution_id` como label do stream é seguro
+# (não é alta cardinalidade por linha, é um stream por execução). É essa label
+# que `GET /executions/{id}/logs` consulta (`src/platform_api/routers/executions.py`).
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: batch_manual_executions
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: batch
+          __path__: /var/log/legacy/backoffice/*/*.log
+    pipeline_stages:
+      # Nome do arquivo é a fonte da verdade: <process>.<execution_id>.log,
+      # dentro de logs/backoffice/<domain>/ — ver batch-wrapper.sh passo 6.
+      - regex:
+          source: filename
+          expression: '^/var/log/legacy/backoffice/(?P<domain>[^/]+)/(?P<process>[^./]+)\.(?P<execution_id>[0-9a-fA-F-]{8,64})\.log$'
+      - labels:
+          domain:
+          process:
+          execution_id:
