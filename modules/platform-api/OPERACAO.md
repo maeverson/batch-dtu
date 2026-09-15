@@ -49,9 +49,13 @@ tipicamente usa `roles` direto, não `realm_access.roles`), `OIDC_SUBJECT_CLAIM`
 Não existe endpoint de administração ainda (Fase 1 embrionária) — inserir direto:
 
 ```sql
-INSERT INTO catalog.role_binding (subject, role, scope_domain, scope_environment, granted_by)
-VALUES ('operator', 'batch.operator', NULL, 'UAT', 'voce@dev');
+INSERT INTO catalog.role_binding (subject, subject_type, role, scope_domain, scope_environment, granted_by, created_by)
+VALUES ('operator', 'user', 'batch.operator', NULL, 'UAT', 'voce@dev', 'voce@dev');
 ```
+
+`subject_type` e `created_by` são `NOT NULL` (`catalog/db/models.py`) — sem eles o insert falha
+com `NotNullViolation`. `role` é validado por `CHECK` contra `batch.viewer`, `batch.operator`,
+`batch.operator-prod`, `batch.admin` (com hífen em `operator-prod`, não underscore).
 
 `NULL` numa dimensão = essa dimensão não restringe. Um binding sem `scope_environment` cobre
 PROD e UAT; um sem NENHUM escopo cobre tudo daquela role.
