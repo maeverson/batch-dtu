@@ -133,14 +133,42 @@ export interface ExecutionRequest {
 
 export interface ExecutionLogs {
   execution_id: string
+  /** 'newrelic' em ambiente implantado, 'loki' no compose local. */
+  backend?: string
   lines: { timestamp_ns: string; line: string }[]
 }
 
 export interface Me {
   subject: string
+  display_name: string | null
+  /** App roles do Entra ID presentes no token — a autorização inteira. */
   roles: string[]
-  visible_domains: string[] | null
-  visible_environments: string[] | null
+  /** Ambiente que ESTA instância da API serve (um deploy por ambiente). */
+  environment: string
+  /** Host do catálogo que ESTA instância opera. */
+  host: string
+  is_admin: boolean
+}
+
+/** Corpo de `POST /admin/jobs` — `host`/`environment` vêm da instância. */
+export interface AdminJobCreate {
+  process_name: string
+  wrapper_path?: string | null
+  contract_path?: string | null
+  domain?: string | null
+  client_code?: string | null
+  client_name?: string | null
+  kind?: string
+  criticality?: string | null
+  sla?: string | null
+  owner?: string | null
+  status?: string
+  status_reason?: string | null
+  reason: string
+}
+
+export type AdminJobUpdate = Partial<Omit<AdminJobCreate, 'process_name' | 'reason'>> & {
+  reason: string
 }
 
 export interface ApiErrorBody {

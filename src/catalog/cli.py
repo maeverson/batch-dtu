@@ -22,6 +22,7 @@ from .report import (
     write_findings_csv,
     write_jobs_csv,
 )
+from .ingest_processes import DEFAULT_FRAMEWORK_ROOT
 from .seedpkg import SeedPackage
 
 app = typer.Typer(add_completion=False, help="Job Catalog — Batch DTU")
@@ -337,6 +338,78 @@ def check_names(
                 ",".join(parsed.flags) or "-",
             ])
         )
+
+
+@app.command("ingest-processes")
+def ingest_processes(
+    directory: Path = typer.Argument(
+        ...,
+        help="Diretório de contratos, ex.: /opt2/batch_v2/batch-commons-framework/processes/base2",
+    ),
+    host: str = typer.Option(..., "--host", help="Hostname do catálogo (ex.: srv-sftp-2)"),
+    environment: str = typer.Option(..., "--environment", help="PROD | UAT | TEST | DEV"),
+    domain: str | None = typer.Option(
+        None, "--domain", help="Default: o nome do diretório (base2, reportes, ...)"
+    ),
+    framework_root: str = typer.Option(
+        DEFAULT_FRAMEWORK_ROOT, "--framework-root",
+        help="Raiz do framework NO HOST — compõe o contract_path gravado",
+    ),
+    status: str = typer.Option(
+        "on_demand", "--status",
+        help="Status inicial. Sem crontab não há agenda: 'on_demand' é o honesto",
+    ),
+    actor: str = typer.Option("cli", "--actor", help="Ator registrado na auditoria"),
+    role: str = typer.Option("app", "--role", help="Papel de conexão: app | migrations | test"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Simula e reverte a transação"),
+) -> None:
+    """Carrega no RDS os contratos de um diretório (um `.json` = um job).
+
+    Diferente de `catalog load`, que parte do pacote do coletor e traz agenda e
+    crontab junto. Use este quando a fonte for a árvore de contratos.
+    """
+    from .db.session import session_scope
+    from .ingest_processes import ingest_directory
+
+    if environment.upper() not in ("PROD", "UAT", "TEST", "DEV"):
+        typer.echo(f"environment invalido: {environment}", err=True)
+        raise typer.Exit(code=2)
+
+    with session_scope(role) as session:
+        report = ingest_directory(
+            directory, session, host=host, environment=environment.upper(),
+            domain=domain, actor=actor, framework_root=framework_root,
+            status=status, dry_run=dry_run,
+        )
+
+    typer.echo(f"host ..................: {report.host} ({report.environment})")
+    typer.echo(f"dominio ...............: {report.domain}")
+    typer.echo(f"contract_path .........: {report.contract_root}/<arquivo>.json")
+    if report.dry_run:
+        typer.echo("MODO ..................: dry-run (nada persistido)")
+    typer.echo(f"arquivos lidos ........: {report.files_read}")
+    typer.echo(f"jobs ..................: +{report.jobs_created} criados, "
+               f"~{report.jobs_updated} atualizados, ={report.jobs_unchanged} sem mudanca")
+    typer.echo(f"versoes de contrato ...: +{report.versions_created} novas, "
+               f"={report.versions_reused} ja existentes")
+    typer.echo(f"audit_event ...........: {report.audit_events}")
+    if report.schema_invalid:
+        typer.echo(f"contratos invalidos ...: {len(report.schema_invalid)} "
+                   f"(carregados mesmo assim, veredito gravado na versao)")
+        for linha in report.schema_invalid[:10]:
+            typer.echo(f"  - {linha}")
+    if report.missing_in_directory:
+        typer.echo(f"no catalogo e fora do diretorio: {len(report.missing_in_directory)} "
+                   f"(NAO removidos — use `catalog reconcile`)")
+        for caminho in report.missing_in_directory[:10]:
+            typer.echo(f"  - {caminho}")
+    if report.invalid_json:
+        typer.echo(
+            f"JSON quebrado .........: {len(report.invalid_json)} (NAO carregados)", err=True
+        )
+        for linha in report.invalid_json:
+            typer.echo(f"  - {linha}", err=True)
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":  # pragma: no cover

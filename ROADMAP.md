@@ -16,7 +16,7 @@ Fundação de tudo: catálogo como fonte da verdade.
   - [x] `job` (+ `job_schedule`, `job_contract_version`, `job_revision`, `job_connection_alias`), `audit_event`, `connection_alias`, `crontab_snapshot`/`crontab_entry`, `reconciliation_run`/`reconciliation_finding`
   - [x] `execution` — modelada com `idempotency_key`, `requested_by`/`justification` e `log_link`; populada a partir da Etapa 1.2
 - [x] Migrations e banco (ADR-003: default RDS PostgreSQL) — Alembic; append-only de auditoria por trigger + REVOKE, com teste de drift modelo × migration
-- [x] Importador/seed do inventário, com `status_reason` dos comentários do crontab — `catalog import` (relatório) e `catalog load` (persistência idempotente).
+- [x] Importador/seed do inventário, com `status_reason` dos comentários do crontab — `catalog import` (relatório) e `catalog load` (persistência idempotente). Fonte alternativa: `catalog ingest-processes <diretório>` carrega direto do `processes/<domínio>/` (um `.json` = um job) — sem crontab não inventa agenda e não apaga nada.
   **A coleta de 09/2026 mediu 597 linhas de job (393 ativas, 204 desabilitadas), consolidadas em 527 jobs distintos**, não as 509 entradas da premissa inicial. O crontab tem 1352 linhas ao todo: 597 de job, 317 de manutenção, o resto prosa, `VAR=` e branco
 - [x] Validação de schema do contrato JSON na escrita — `src/catalog/contract_schema.py`, veredito gravado em `job_contract_version.validation_status`; `catalog validate` valida em lote
 - [x] Versionamento de contrato e metadados — `job_contract_version` (append-only, por hash) e `job_revision` (snapshot + diff do que mudou), consultáveis por `catalog history <processo>`; o endpoint REST equivalente vem na Etapa 1.2
@@ -42,9 +42,14 @@ Fundação de tudo: catálogo como fonte da verdade.
 
 ### Etapa 1.2 — `platform-api`
 
-- [x] Autenticação Entra ID (OIDC) + RBAC (`batch.viewer/operator/operator-prod/admin`) com escopo domínio/ambiente
-  - [x] **Decidido**: stack Python/FastAPI; escopo em `role_binding` no catálogo (não em grupos do Entra); deploy em EKS com VPC até os hosts
-  - [x] Tabela `role_binding` (escopo domínio/ambiente/host; `NULL` = todas)
+- [x] Autenticação Entra ID (OIDC) + RBAC (`batch.viewer/operator/operator-prod/admin`)
+  - [x] **Decidido**: stack Python/FastAPI; deploy em EKS com VPC até os hosts
+  - [x] **Revisado em 17/09/2026 pelo cliente**: RBAC vem **inteiro do Entra ID** — a app role do
+    token autoriza, e ambiente/host vêm do DEPLOY (`PLATFORM_ENVIRONMENT`/`PLATFORM_HOST`: uma
+    instância, um ambiente, um host; UAT primeiro, PROD depois do ensaio). `role_binding` continua
+    no schema e nenhum código a lê. Custo aceito: **acabou o escopo por domínio** — app role do
+    Entra é plana
+  - [x] Tabela `role_binding` (inativa — ver acima)
   - [x] Middleware OIDC contra Keycloak local, verificado com token real (achado e corrigido: o access
     token do Keycloak não tinha `aud` — mapper de audience adicionado ao realm) — troca para Entra
     real é só `OIDC_ISSUER`/`OIDC_AUDIENCE`/`OIDC_ROLES_CLAIM` (falta tenant/client id do Entra real)
@@ -61,6 +66,15 @@ Fundação de tudo: catálogo como fonte da verdade.
   não-bloqueante (409 imediato, não fila); múltiplas datas viram uma invocação só, serializada
   pelo próprio `main.sh`
 - [x] Auditoria automática (`audit_event`) em toda ação de escrita — testado contra Postgres real
+- [x] **Despacho assíncrono** (17/09/2026): `POST /executions` responde **200 ao despachar**
+  (`status: running`); a pré-validação (`--validate-file`) continua síncrona, e o desfecho é
+  gravado por tarefa de fundo. Exige o alerta de execução presa em `running` no New Relic — é ele
+  que substitui o exit code que a resposta síncrona devolvia
+- [x] **CRUD de administração** (`/admin/*`, só `batch.admin`): criar/editar/desativar job e
+  publicar versão de contrato validada. `DELETE` desativa, nunca apaga
+- [x] **Configuração de implantação** em `deploy/` (Entra, host do `main.sh`, New Relic, RDS),
+  por serviço — variáveis sobem com o processo, não com a sessão do host. Runbook completo em
+  `docs/implantacao-fase-1.md`
 
 **Entrega verificável**: ✅ **execução manual via `curl` com registro de auditoria, verificada de
 ponta a ponta em 16/09/2026** contra o container `docker/legacy`: `POST /executions` → pré-validação
@@ -89,6 +103,12 @@ o que impedia qualquer log de execução de existir.
   a linha caía fora da janela consultada) e a janela do endpoint era colada em
   `[started_at, ended_at + 1s]` — estreita demais para o atraso de embarque, devolvendo execução
   "sem log" que é indistinguível, para quem opera, de execução que não logou
+- [x] **Backend de observabilidade: New Relic** (decisão de 17/09/2026) — APM no processo
+  (evento `BatchExecution` por execução), agente de log no host embarcando
+  `logs/backoffice/<domínio>/<processo>.<execution_id>.log`, e consulta por NerdGraph em
+  `GET /executions/{id}/logs` (`LOG_BACKEND=newrelic|loki`). Config e regra de parsing em
+  `deploy/newrelic/`. **Não verificado contra uma conta real** — não há conta New Relic neste
+  ambiente; o que roda aqui é o caminho Loki
 - [x] Painel de execuções manuais (Grafana) — dashboard `docker/grafana/dashboards/execucoes-manuais.json`
   (datasource Postgres novo em `docker/grafana/provisioning/datasources/datasources.yaml`, direto em
   `catalog.execution`/`catalog.job`): contagem e taxa de sucesso do período, execuções por hora por status,
@@ -128,6 +148,9 @@ para o container `docker/legacy` na Etapa 1.2. Fazer esse teste manual é pré-r
 Fase 1 abaixo.
 
 ### 🏁 Marco de conclusão da Fase 1
+
+> Passo a passo de implantação (Entra ID real, apontamento para `172.17.37.120`, conta
+> `backoffice_svc`, wrapper e ensaio em UAT): `docs/implantacao-fase-1.md`.
 
 - [ ] Reprocessamento **Zinli/MFTech executado fim-a-fim via Back Office** — **ensaiado antes em UAT** (`172.21.86.76`): steps `upload_remote` não estreiam contra cliente real
 - [ ] Zero execuções manuais via SSH fora do break-glass (auditoria sshd × plataforma)

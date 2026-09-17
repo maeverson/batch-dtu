@@ -2,11 +2,10 @@
 // Quem autoriza de verdade é sempre o servidor (todo POST/PATCH pode voltar
 // 403 mesmo com isto liberando o botão) — isto existe só para não oferecer
 // uma ação que o servidor recusaria, não para decidir permissão de verdade.
-// A diferença de propósito em relação a `authz.py`: aqui não há acesso a
-// `role_binding` por job, só ao agregado de `GET /me` (domínios/ambientes
-// visíveis, união de todos os bindings do usuário) — por isso isto é mais
-// permissivo do que a regra real quando os bindings são heterogêneos entre
-// domínios/ambientes. Nesse caso o servidor é quem corta.
+//
+// Desde que o RBAC passou a vir inteiro do Entra ID, a regra ficou simples:
+// role no token + ambiente da instância. Não há mais conjunto de domínios
+// visíveis para conferir — o servidor só serve um ambiente e um host.
 
 import type { Environment, Job, Me } from './api/types'
 
@@ -17,25 +16,16 @@ export function requiredOperateRole(environment: Environment | null): string {
 }
 
 export function isAdmin(me: Me | undefined): boolean {
-  return !!me?.roles.includes('batch.admin')
-}
-
-function inVisibleSet(set: string[] | null | undefined, value: string | null): boolean {
-  if (set == null) return true // null = todos (algum binding sem escopo nessa dimensão)
-  if (value == null) return false
-  return set.includes(value)
+  return !!me?.is_admin || !!me?.roles.includes('batch.admin')
 }
 
 /** Só para habilitar/desabilitar o botão — a verdade é o 403 do servidor. */
 export function canAttemptOperate(me: Me | undefined, job: Job): boolean {
   if (!me) return false
+  // O job só chega aqui se a instância o serve (o servidor já filtrou por
+  // ambiente/host); resta a role.
   if (me.roles.includes('batch.admin')) return true
-  const necessaria = requiredOperateRole(job.environment)
-  if (!me.roles.includes(necessaria)) return false
-  return (
-    inVisibleSet(me.visible_domains, job.domain) &&
-    inVisibleSet(me.visible_environments, job.environment)
-  )
+  return me.roles.includes(requiredOperateRole(job.environment))
 }
 
 export function isViewerOnly(me: Me | undefined): boolean {

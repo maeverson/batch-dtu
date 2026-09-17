@@ -51,6 +51,16 @@ export function apiPatch<T>(path: string, token: string | undefined, body?: unkn
   return request<T>(path, token, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined })
 }
 
+export function apiPut<T>(path: string, token: string | undefined, body?: unknown): Promise<T> {
+  return request<T>(path, token, { method: 'PUT', body: body ? JSON.stringify(body) : undefined })
+}
+
+// `DELETE` com corpo: o motivo é obrigatório do lado do servidor — desativar
+// um job sem justificativa registrada não é uma operação que exista aqui.
+export function apiDelete<T>(path: string, token: string | undefined, body?: unknown): Promise<T> {
+  return request<T>(path, token, { method: 'DELETE', body: body ? JSON.stringify(body) : undefined })
+}
+
 export function qs(params: Record<string, string | undefined | null>): string {
   const entradas = Object.entries(params).filter(([, v]) => v != null && v !== '')
   if (entradas.length === 0) return ''

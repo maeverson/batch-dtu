@@ -7,6 +7,7 @@ import { JobDetailPage } from './pages/JobDetailPage'
 import { ExecutionsPage } from './pages/ExecutionsPage'
 import { ExecutionDetailPage } from './pages/ExecutionDetailPage'
 import { ChangeRequestsPage } from './pages/ChangeRequestsPage'
+import { AdminPage } from './pages/AdminPage'
 
 // Nenhuma ação operacional fora da API (CLAUDE.md do módulo): esta app só
 // fala com a Platform API por HTTP — nunca SSH, nunca link de instrução.
@@ -53,6 +54,7 @@ export default function App() {
         <Route path="/execucoes" element={<ExecutionsPage />} />
         <Route path="/execucoes/:executionId" element={<ExecutionDetailPage />} />
         <Route path="/mudancas" element={<ChangeRequestsPage />} />
+        <Route path="/admin" element={<AdminPage />} />
         <Route path="/callback" element={<Navigate to="/catalogo" replace />} />
         <Route path="*" element={<Navigate to="/catalogo" replace />} />
       </Route>

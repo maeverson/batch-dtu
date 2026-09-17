@@ -12,9 +12,9 @@ createRoot(document.getElementById('root')!).render(
       authority={oidcConfig.authority}
       client_id={oidcConfig.client_id}
       redirect_uri={oidcConfig.redirect_uri}
-      scope="openid profile email"
+      scope={oidcConfig.scope}
       onSigninCallback={() => {
-        // limpa `?code=&state=` da URL depois do redirect de volta do Keycloak
+        // limpa `?code=&state=` da URL depois do redirect de volta do IdP
         window.history.replaceState({}, document.title, window.location.pathname)
       }}
     >

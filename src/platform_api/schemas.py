@@ -82,13 +82,11 @@ class ReconciliationStateOut(BaseModel):
 
 class MeOut(BaseModel):
     subject: str
-    roles: list[str]
-    visible_domains: list[str] | None = Field(
-        None, description="null = todos os domínios (algum binding sem escopo de domínio)"
-    )
-    visible_environments: list[str] | None = Field(
-        None, description="null = todos os ambientes (algum binding sem escopo de ambiente)"
-    )
+    display_name: str | None = None
+    roles: list[str] = Field(..., description="App roles do Entra ID presentes no token")
+    environment: str = Field(..., description="Ambiente que ESTA instância serve")
+    host: str = Field(..., description="Host do catálogo que ESTA instância opera")
+    is_admin: bool = False
 
 
 class JobStatusChange(BaseModel):

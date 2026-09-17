@@ -1,16 +1,18 @@
 """Verificação de token OIDC.
 
-Local: Keycloak (`docker compose --profile auth up`), realm `batch-dtu`,
-roles `batch.viewer/operator/operator-prod/admin` como **realm roles**
-(`realm_access.roles`). Entra ID: troca de `OIDCSettings` (issuer, claim de
-roles), nada aqui muda de forma.
+Ambiente implantado: **Entra ID**, token v2
+(`accessTokenAcceptedVersion: 2`), app roles em `roles`. Ambiente local de
+desenvolvimento: Keycloak do `docker-compose.yaml`, realm roles em
+`realm_access.roles`. A diferença é inteira em `OIDCSettings` — nada aqui
+muda de forma.
 
-**O que este módulo NÃO faz**: não lê escopo de domínio/ambiente do token. A
-fixture do Keycloak local declara `batch_domains`/`batch_environments` como
-claims — mas a decisão registrada em `modules/platform-api/CLAUDE.md` é que o
-escopo mora em `role_binding`, no catálogo, não em claim do IdP. Um IdP audita
-identidade; quem audita "pode operar este job" é o mesmo lugar que audita o
-job. Essas claims da fixture são ignoradas de propósito — ver `authz.py`.
+As roles do token **são** a autorização (decisão do cliente: RBAC no Entra).
+`authz.py` não consulta mais tabela nenhuma para decidir; o que restringe
+ambiente/host é o deploy, não uma linha de banco.
+
+`display_name` é lido à parte do `subject` porque a identidade estável do
+Entra (`oid`) é um GUID: gravar só ele deixa a trilha de auditoria ilegível
+para quem a lê depois.
 """
 
 from __future__ import annotations
@@ -29,9 +31,10 @@ class TokenInvalid(Exception):
 
 @dataclass(frozen=True)
 class AuthenticatedUser:
-    subject: str                    # chave de `role_binding.subject`
+    subject: str                    # identidade estável (Entra: `oid`)
     roles: frozenset[str]
     claims: dict
+    display_name: str | None = None  # legível na auditoria (Entra: `preferred_username`)
 
     def has_role(self, role: str) -> bool:
         return role in self.roles
@@ -87,4 +90,10 @@ class TokenVerifier:
         if not isinstance(roles, list):
             raise TokenInvalid(f"claim de roles '{self.settings.roles_claim}' não é lista")
 
-        return AuthenticatedUser(subject=str(subject), roles=frozenset(roles), claims=claims)
+        nome = _get_path(claims, self.settings.display_name_claim)
+        return AuthenticatedUser(
+            subject=str(subject),
+            roles=frozenset(roles),
+            claims=claims,
+            display_name=str(nome) if nome else None,
+        )

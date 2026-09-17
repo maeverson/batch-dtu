@@ -1,0 +1,22 @@
+# Agente de log do New Relic NO HOST DO main.sh (infrastructure agent).
+# Instalar como /etc/newrelic-infra/logging.d/batch-backoffice.yml.
+#
+# O que ele embarca: só o log correlacionado que o wrapper da plataforma grava
+# em `$FW_ROOT/logs/backoffice/<domínio>/<processo>.<execution_id>.log` — um
+# arquivo por execução manual. O log do cron (logs/schedulers/) NÃO entra aqui:
+# é outro volume, outro dono, e não tem `execution_id`.
+#
+# A correlação nasce do NOME DO ARQUIVO. O agente manda `filePath` junto de
+# cada linha; quem extrai `domain`/`process`/`execution_id` dali é a regra de
+# parsing da seção abaixo, criada uma vez na conta do New Relic.
+
+logs:
+  - name: batch-backoffice
+    file: /opt2/batch_v2/batch-commons-framework/logs/backoffice/*/*.log
+    attributes:
+      logtype: batch_backoffice
+      # Preencha por host: é o que separa UAT de PROD nas consultas, já que os
+      # dois mandam para a mesma conta.
+      batch_environment: UAT
+      batch_host: com-ins-bch-mdw-dtu-1
+      service_name: batch-legacy-executor

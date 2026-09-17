@@ -28,9 +28,25 @@ Dois pontos do fixture que valem saber (ambos já corrigidos, mas explicam o for
   `.env.example`) — conteúdo de cliente real, uso estritamente local.
 
 ```bash
-export DATABASE_URL=postgresql+psycopg://batch_app:batch_app_dev@localhost:5432/batch_catalog
+set -a; . deploy/platform-api/local.env; set +a   # variáveis sobem com o serviço, não com a sessão
 platform-api   # sobe uvicorn em :8000 — docs interativos em /docs
 ```
+
+O processo **recusa subir** com configuração incompleta (`ConfigurationError`, mensagem sem stack
+trace): sem `SSH_BACKEND_KNOWN_HOSTS` nem o escape explícito de desenvolvimento, sem
+`PLATFORM_ENVIRONMENT`/`PLATFORM_HOST`, ou com `LOG_BACKEND=newrelic` sem chave de consulta. É de
+propósito — uma API que sobe sem verificar chave de host é pior que uma que não sobe.
+
+`GET /health` devolve `environment`, `host` e `log_backend`: com um deploy por ambiente, saber
+**qual** instância respondeu é parte do diagnóstico.
+
+## Escopo do deploy — uma instância, um ambiente, um host
+
+`PLATFORM_ENVIRONMENT` (`UAT`/`PROD`/…) e `PLATFORM_HOST` (o hostname do catálogo:
+`com-ins-bch-mdw-dtu-1`, `srv-sftp-2`) recortam tudo: listagem, execução e administração. Job fora
+do recorte responde 403 ("não é servido por esta instância") **inclusive para `batch.admin`** — a
+separação é do deploy, e é ela que garante que o canal SSH desta instância só alcança o host que
+ela declara operar. `SSH_BACKEND_HOST` é o endereço de rede (IP) do mesmo host.
 
 ## Autenticação (Keycloak local)
 
@@ -44,30 +60,21 @@ curl -s -X POST http://localhost:8080/realms/batch-dtu/protocol/openid-connect/t
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])'
 ```
 
-O token carrega `realm_access.roles` (a entitlement) e `preferred_username` (o `subject` de
-`role_binding`). **As claims `batch_domains`/`batch_environments` do Keycloak são ignoradas de
-propósito** — o escopo fino vem só de `role_binding`, nunca do IdP (ver `CLAUDE.md`). Sem uma
-linha em `role_binding` para o `subject`, o usuário não opera nem vê nada, mesmo com a role certa
-no token.
+O token carrega `realm_access.roles` e `preferred_username`. **A role do token é a autorização
+inteira** — não há mais `role_binding` consultado em runtime (decisão do cliente; ver
+`CLAUDE.md`). As claims `batch_domains`/`batch_environments` da fixture do Keycloak continuam
+ignoradas.
 
-Trocar para Entra ID real: variáveis `OIDC_ISSUER`, `OIDC_AUDIENCE`, `OIDC_ROLES_CLAIM` (Entra
-tipicamente usa `roles` direto, não `realm_access.roles`), `OIDC_SUBJECT_CLAIM`. Nada mais muda.
+Trocar para Entra ID real é só variável (ver `deploy/platform-api/uat.env.example`):
+`OIDC_ISSUER`, `OIDC_AUDIENCE`, `OIDC_JWKS_URI` (**obrigatório** no Entra — o default é derivado
+no formato Keycloak), `OIDC_ROLES_CLAIM=roles`, `OIDC_SUBJECT_CLAIM=oid`,
+`OIDC_DISPLAY_NAME_CLAIM=preferred_username`.
 
-## Conceder acesso — `role_binding`
+## Conceder acesso — no Entra ID
 
-Não existe endpoint de administração ainda (Fase 1 embrionária) — inserir direto:
-
-```sql
-INSERT INTO catalog.role_binding (subject, subject_type, role, scope_domain, scope_environment, granted_by, created_by)
-VALUES ('operator', 'user', 'batch.operator', NULL, 'UAT', 'voce@dev', 'voce@dev');
-```
-
-`subject_type` e `created_by` são `NOT NULL` (`catalog/db/models.py`) — sem eles o insert falha
-com `NotNullViolation`. `role` é validado por `CHECK` contra `batch.viewer`, `batch.operator`,
-`batch.operator-prod`, `batch.admin` (com hífen em `operator-prod`, não underscore).
-
-`NULL` numa dimensão = essa dimensão não restringe. Um binding sem `scope_environment` cobre
-PROD e UAT; um sem NENHUM escopo cobre tudo daquela role.
+Grupo do cliente atribuído à app role, na *enterprise application*. É o único lugar; revogar é
+tirar o grupo. Mantenha grupos separados para operador de UAT e de PROD — com uma instância por
+ambiente, é essa separação que impede alguém de homologação disparar contra cliente real.
 
 ## Endpoints
 
@@ -82,11 +89,22 @@ PROD e UAT; um sem NENHUM escopo cobre tudo daquela role.
 | `PATCH /jobs/{id}/status` | Grava o estado desejado + abre `crontab_change_request` — ver ciclo no `CLAUDE.md` |
 | `POST /executions` | Execução manual / reprocesso — ver fluxo abaixo |
 | `GET /executions?job_id=` / `GET /executions/{id}` | Consulta |
-| `GET /executions/{id}/logs` | Proxy Loki por `execution_id` (funciona já — falta o agente que embarca os `.log` do legado, é `observability`, Etapa 1.3) |
+| `GET /executions/{id}/logs` | Log por `execution_id` — New Relic (NerdGraph) em ambiente implantado, Loki no compose local (`LOG_BACKEND`) |
 | `GET /change-requests?state=&host=` | Worklist do Back Office |
 | `POST /change-requests/{id}/cancel` | Desiste de uma mudança pendente |
 | `GET /audit-events?...` | Exige `batch.admin` |
-| `GET /me` | Subject, roles e domínios/ambientes visíveis do token atual (Back Office) |
+| `GET /me` | Subject, display_name, roles do token, `environment`/`host` da instância, `is_admin` |
+| `GET /admin/jobs` … | CRUD de catálogo (`POST`/`PATCH`/`DELETE` + `PUT /admin/jobs/{id}/contract`) — exige `batch.admin` |
+
+### `POST /executions` — **200 ao despachar, não ao terminar**
+
+A resposta é o comprovante do despacho (`status: running`), não o desfecho: o SSH continua rodando
+depois que o cliente já recebeu 200. Quem acompanha é o New Relic (evento `BatchExecution` + log
+por `execution_id`); o desfecho cai em `GET /executions/{id}` quando o `main.sh` termina.
+
+Consequência operacional que precisa de alerta, não de documentação: execução que trava fica em
+`running` e **ninguém é avisado pela resposta HTTP**. O alerta de `running` há mais de 30 minutos
+(`deploy/newrelic/README.md`) é o que substitui o exit code que a resposta síncrona dava.
 
 ### `POST /executions` — o que é obrigatório
 
@@ -98,8 +116,9 @@ PROD e UAT; um sem NENHUM escopo cobre tudo daquela role.
   execução bem-sucedida (validação + execução), de propósito.
 - `idempotency_key` opcional: reenvio da mesma chave devolve a execução já registrada, nunca
   dispara de novo.
-- Duas requisições concorrentes para o **mesmo `job_id`** — a segunda recebe 409
-  (`pg_try_advisory_xact_lock`, sem fila, sem espera).
+- Duas travas de concorrência para o mesmo `job_id`, ambas 409: `pg_try_advisory_xact_lock` na
+  janela de registro, e **execução já `running`** para o intervalo inteiro do despacho — o lock
+  morre no commit, o `main.sh` não.
 - Datas múltiplas (`dates_pattern: ["20260901","20260902"]`) viram UMA invocação
   (`--dates-pattern-files 20260901,20260902`) — é o `main.sh` quem serializa internamente.
 
@@ -127,8 +146,7 @@ de teste real e tokens de verdade do Keycloak — pula sozinho se um dos dois n�
 
 ```bash
 docker compose --profile legacy up -d --build
-export SSH_BACKEND_HOST=localhost SSH_BACKEND_PORT=2222
-export SSH_BACKEND_KEY=docker/legacy/keys/backoffice_svc_ed25519
+set -a; . deploy/platform-api/local.env; set +a
 platform-api
 curl -X PATCH localhost:8000/jobs/<id>/status -H "Authorization: Bearer $TOKEN" \
   -d '{"desired_status":"disabled","reason":"teste"}'

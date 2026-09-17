@@ -2,6 +2,12 @@
 compose, `docker compose --profile auth up`) + `InMemoryExecutionBackend`
 (sem SSH — isso já é coberto por `test_platform_api_ssh_integration.py`).
 
+O IdP local é Keycloak porque é o que roda neste ambiente; o que a API lê dele
+é só `roles` + `subject`, a mesma forma do token do Entra ID. **Não há mais
+`role_binding`**: a role do token É a autorização, e ambiente/host vêm do
+deploy — por isso cada teste diz explicitamente qual instância está
+construindo (`client` = UAT, `client_prod` = PROD).
+
 Pula automaticamente se Postgres ou Keycloak não estiverem no ar — mesmo
 padrão de `test_db_catalog.py`.
 """
@@ -90,16 +96,38 @@ def session(engine):
         s.rollback()
 
 
+HOST = "srv-sftp-2"
+
+
 @pytest.fixture()
-def app(engine):
+def make_app(engine):
+    """Constrói UMA instância da API para o ambiente pedido — é o desenho de
+    deploy (G1): UAT e PROD não convivem no mesmo processo."""
+    from dataclasses import replace
+
     from platform_api.app import create_app
     from platform_api.config import Settings
     from platform_api.ssh_backend import InMemoryExecutionBackend
 
-    backend = InMemoryExecutionBackend()
-    aplicativo = create_app(Settings.from_env(), execution_backend=backend, engine=engine)
-    aplicativo.state.execution_backend = backend   # referência estável p/ os testes inspecionarem
-    return aplicativo
+    def _make(environment: str = "UAT", host: str = HOST):
+        backend = InMemoryExecutionBackend()
+        settings = replace(Settings.from_env(), environment=environment, host=host)
+        aplicativo = create_app(settings, execution_backend=backend, engine=engine)
+        # referência estável p/ os testes inspecionarem
+        aplicativo.state.execution_backend = backend
+        return aplicativo
+
+    return _make
+
+
+@pytest.fixture()
+def app(make_app):
+    return make_app("UAT")
+
+
+@pytest.fixture()
+def app_prod(make_app):
+    return make_app("PROD")
 
 
 @pytest.fixture()
@@ -107,6 +135,14 @@ def client(app):
     from fastapi.testclient import TestClient
 
     with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture()
+def client_prod(app_prod):
+    from fastapi.testclient import TestClient
+
+    with TestClient(app_prod) as c:
         yield c
 
 
@@ -149,12 +185,12 @@ def _contrato(upload_remote: bool = False) -> dict:
     }
 
 
-def _job(session, *, environment="PROD", domain="reportes", upload_remote=False,
+def _job(session, *, environment="UAT", domain="reportes", upload_remote=False,
           process_name="prd_aaa_col_rpt", status="active"):
     from catalog.db.models import Job, JobContractVersion
 
     job = Job(
-        host="srv-sftp-2", process_name=process_name,
+        host=HOST, process_name=process_name,
         contract_path=f"{FW}/processes/{domain}/{process_name}.json",
         domain=domain, environment=environment, status=status, client_name="cliente_a",
     )
@@ -172,13 +208,13 @@ def _job(session, *, environment="PROD", domain="reportes", upload_remote=False,
     return job
 
 
-def _binding(session, subject, role, **scope):
-    from catalog.db.models import RoleBinding
 
-    b = RoleBinding(subject=subject, role=role, granted_by="teste@dev", **scope)
-    session.add(b)
-    session.commit()
-    return b
+
+def _execucao_no_banco(session, execution_id):
+    from catalog.db.models import Execution
+
+    session.expire_all()
+    return session.get(Execution, uuid.UUID(execution_id))
 
 
 # --- catálogo -----------------------------------------------------------
@@ -212,16 +248,10 @@ def test_cors_recusa_origem_desconhecida(client):
     assert "access-control-allow-origin" not in r.headers
 
 
-def test_token_sem_binding_nao_ve_o_job(client, session):
-    _job(session)
-    r = client.get("/jobs", headers=_auth("viewer"))
-    assert r.status_code == 200
-    assert r.json() == []   # usuário 'viewer' não tem role_binding nenhum
-
-
-def test_binding_da_visibilidade(client, session):
+def test_role_do_token_basta_para_ver(client, session):
+    """RBAC vem inteiro do Entra: com a role no token, o job do ambiente desta
+    instância aparece — não existe mais tabela de binding para conceder."""
     job = _job(session)
-    _binding(session, "viewer", "batch.viewer")   # sem escopo = todas
     r = client.get("/jobs", headers=_auth("viewer"))
     assert r.status_code == 200
     assert [j["process_name"] for j in r.json()] == ["prd_aaa_col_rpt"]
@@ -230,17 +260,38 @@ def test_binding_da_visibilidade(client, session):
     assert r2.status_code == 200
 
 
-def test_binding_escopado_por_dominio_restringe(client, session):
-    _job(session, domain="reportes", process_name="prd_a_rpt")
-    _job(session, domain="otros", process_name="prd_b_otr")
-    _binding(session, "viewer", "batch.viewer", scope_domain="reportes")
+def test_instancia_de_uat_nao_ve_job_de_prod(client, session):
+    """A separação PROD × UAT é do DEPLOY, não da role (G1). Nem `batch.admin`
+    atravessa — se atravessasse, o canal SSH desta instância alcançaria um host
+    que ela não declara operar."""
+    _job(session, environment="PROD", process_name="prd_prod_col_rpt")
+    _job(session, environment="UAT", process_name="uat_col_rpt")
+
+    r = client.get("/jobs", headers=_auth("admin-batch"))
+    assert [j["process_name"] for j in r.json()] == ["uat_col_rpt"]
+
+
+def test_instancia_de_uat_recusa_job_de_prod_por_id(client, session):
+    job = _job(session, environment="PROD")
+    r = client.get(f"/jobs/{job.id}", headers=_auth("admin-batch"))
+    assert r.status_code == 403
+    assert "não é servido por esta instância" in r.json()["detail"]
+
+
+def test_job_de_outro_host_nao_aparece(client, session):
+    from catalog.db.models import Job
+
+    session.add(Job(host="outro-host", process_name="uat_outro", environment="UAT",
+                    contract_path=f"{FW}/processes/otros/uat_outro.json", domain="otros"))
+    session.commit()
+    _job(session, process_name="uat_daqui")
+
     r = client.get("/jobs", headers=_auth("viewer"))
-    assert [j["process_name"] for j in r.json()] == ["prd_a_rpt"]
+    assert [j["process_name"] for j in r.json()] == ["uat_daqui"]
 
 
 def test_validate_endpoint_roda_o_schema(client, session):
     job = _job(session)
-    _binding(session, "viewer", "batch.viewer")
     r = client.post(f"/jobs/{job.id}/validate", headers=_auth("viewer"))
     assert r.status_code == 200
     assert r.json()["status"] == "valid"
@@ -248,17 +299,15 @@ def test_validate_endpoint_roda_o_schema(client, session):
 
 # --- PATCH /jobs/{id}/status --------------------------------------------
 
-def test_patch_status_sem_role_e_403(client, session):
+def test_patch_status_com_role_de_leitura_e_403(client, session):
     job = _job(session)
-    _binding(session, "operator", "batch.operator", scope_environment="UAT")   # não cobre PROD
-    r = client.patch(f"/jobs/{job.id}/status", headers=_auth("operator"),
+    r = client.patch(f"/jobs/{job.id}/status", headers=_auth("viewer"),
                      json={"desired_status": "disabled", "reason": "teste"})
     assert r.status_code == 403
 
 
 def test_patch_status_com_role_certa_abre_change_request(client, session):
-    job = _job(session, environment="UAT")
-    _binding(session, "operator", "batch.operator")
+    job = _job(session)
     r = client.patch(f"/jobs/{job.id}/status", headers=_auth("operator"),
                      json={"desired_status": "disabled", "reason": "cliente suspendeu"})
     assert r.status_code == 201
@@ -271,25 +320,24 @@ def test_patch_status_com_role_certa_abre_change_request(client, session):
     assert r2.json()["status"] == "disabled"
 
 
-def test_prod_exige_operator_prod(client, session):
+def test_prod_exige_operator_prod(client_prod, session):
+    """Na instância de PROD, `batch.operator` não basta — é a role do token que
+    decide, e o ambiente do job vem do deploy."""
     job = _job(session, environment="PROD")
-    _binding(session, "operator", "batch.operator")   # sem -prod
-    r = client.patch(f"/jobs/{job.id}/status", headers=_auth("operator"),
-                     json={"desired_status": "disabled", "reason": "teste"})
+    r = client_prod.patch(f"/jobs/{job.id}/status", headers=_auth("operator"),
+                          json={"desired_status": "disabled", "reason": "teste"})
     assert r.status_code == 403
     assert "operator-prod" in r.json()["detail"]
 
-    _binding(session, "operator-prod", "batch.operator-prod")
-    r2 = client.patch(f"/jobs/{job.id}/status", headers=_auth("operator-prod"),
-                      json={"desired_status": "disabled", "reason": "teste"})
+    r2 = client_prod.patch(f"/jobs/{job.id}/status", headers=_auth("operator-prod"),
+                           json={"desired_status": "disabled", "reason": "teste"})
     assert r2.status_code == 201
 
 
 # --- POST /executions -----------------------------------------------------
 
 def test_execucao_exige_confirm_target_dates(client, session):
-    job = _job(session, environment="UAT")
-    _binding(session, "operator", "batch.operator")
+    job = _job(session)
     r = client.post("/executions", headers=_auth("operator"), json={
         "job_id": str(job.id), "dates_pattern": ["20260901"],
         "confirm_target_dates": False, "justification": "teste",
@@ -297,42 +345,52 @@ def test_execucao_exige_confirm_target_dates(client, session):
     assert r.status_code == 422
 
 
-def test_execucao_upload_remote_prod_exige_segunda_confirmacao(client, session):
+def test_execucao_upload_remote_prod_exige_segunda_confirmacao(client_prod, session):
     job = _job(session, environment="PROD", upload_remote=True)
-    _binding(session, "operator-prod", "batch.operator-prod")
-    r = client.post("/executions", headers=_auth("operator-prod"), json={
+    r = client_prod.post("/executions", headers=_auth("operator-prod"), json={
         "job_id": str(job.id), "dates_pattern": ["20260901"],
         "confirm_target_dates": True, "justification": "reprocesso",
     })
     assert r.status_code == 422
     assert "confirm_upload_remote" in r.json()["detail"]
 
-    r2 = client.post("/executions", headers=_auth("operator-prod"), json={
+    r2 = client_prod.post("/executions", headers=_auth("operator-prod"), json={
         "job_id": str(job.id), "dates_pattern": ["20260901"],
         "confirm_target_dates": True, "confirm_upload_remote": True,
         "justification": "reprocesso",
     })
-    assert r2.status_code == 201
+    assert r2.status_code == 200
 
 
-def test_execucao_dispara_e_audita(client, session, app):
-    job = _job(session, environment="UAT")
-    _binding(session, "operator", "batch.operator")
+def test_execucao_responde_200_running_e_conclui_em_background(client, session, app):
+    """G5: a resposta é o COMPROVANTE do despacho (200 + `running`), não o
+    desfecho. Quem acompanha é o New Relic pelo `execution_id`; o desfecho
+    cai na tabela quando o SSH termina."""
+    job = _job(session)
     r = client.post("/executions", headers=_auth("operator"), json={
         "job_id": str(job.id), "dates_pattern": ["20260901"],
         "confirm_target_dates": True, "justification": "reprocesso mensal",
     })
-    assert r.status_code == 201, r.text
+    assert r.status_code == 200, r.text
     corpo = r.json()
-    assert corpo["status"] == "succeeded"
-    assert corpo["result"] == "success"
+    assert corpo["status"] == "running"
+    assert corpo["result"] is None
+    assert corpo["log_link"] == f"execution_id={corpo['id']}"
+
+    # O TestClient roda a BackgroundTask antes de devolver o controle, então
+    # aqui o desfecho já está gravado — em produção isso é assíncrono.
+    execucao = _execucao_no_banco(session, corpo["id"])
+    assert execucao.status == "succeeded"
+    assert execucao.result == "success"
+    assert execucao.exit_code == 0
 
     # 2 chamadas ao backend: a pré-validação (--validate-file) e a
     # execução real — ambas passam por build_invocation.
     assert len(app.state.execution_backend.calls) == 2
 
-    from catalog.db.models import AuditEvent
     from sqlalchemy import select
+
+    from catalog.db.models import AuditEvent
     eventos = list(session.scalars(
         select(AuditEvent).where(AuditEvent.target_id == corpo["id"])
         .order_by(AuditEvent.occurred_at)
@@ -340,9 +398,42 @@ def test_execucao_dispara_e_audita(client, session, app):
     assert [e.action for e in eventos] == ["execution.dispatch", "execution.completed"]
 
 
+def test_backend_indisponivel_no_despacho_vira_execucao_falha(client, session, app):
+    """Com o despacho fora da requisição, uma falha de SSH não tem mais para
+    quem subir — precisa virar estado terminal, nunca execução presa em
+    `running`."""
+    from platform_api.ssh_backend import ExecutionBackendUnavailable, InMemoryExecutionBackend
+
+    class BackendQueCaiNaExecucao(InMemoryExecutionBackend):
+        async def dispatch(self, request, execution_id):
+            if request.validate_only:
+                return await super().dispatch(request, execution_id)
+            raise ExecutionBackendUnavailable("host fora do ar")
+
+    app.state.execution_backend = BackendQueCaiNaExecucao()
+    job = _job(session)
+
+    r = client.post("/executions", headers=_auth("operator"), json={
+        "job_id": str(job.id), "dates_pattern": ["20260901"],
+        "confirm_target_dates": True, "justification": "teste",
+    })
+    assert r.status_code == 200          # o despacho FOI aceito
+    execucao = _execucao_no_banco(session, r.json()["id"])
+    assert execucao.status == "failed"
+    assert execucao.result == "failure"
+    assert execucao.ended_at is not None
+
+    from sqlalchemy import select
+
+    from catalog.db.models import AuditEvent
+    acoes = list(session.scalars(
+        select(AuditEvent.action).where(AuditEvent.target_id == r.json()["id"])
+    ))
+    assert "execution.backend_unavailable" in acoes
+
+
 def test_execucao_e_idempotente(client, session, app):
-    job = _job(session, environment="UAT")
-    _binding(session, "operator", "batch.operator")
+    job = _job(session)
     corpo = {
         "job_id": str(job.id), "dates_pattern": ["20260901"],
         "confirm_target_dates": True, "justification": "reprocesso",
@@ -350,8 +441,8 @@ def test_execucao_e_idempotente(client, session, app):
     }
     r1 = client.post("/executions", headers=_auth("operator"), json=corpo)
     r2 = client.post("/executions", headers=_auth("operator"), json=corpo)
-    assert r1.status_code == 201
-    assert r2.status_code == 201
+    assert r1.status_code == 200
+    assert r2.status_code == 200
     assert r1.json()["id"] == r2.json()["id"]
     # 2 na primeira chamada (pré-validação + execução real); a segunda
     # (mesma idempotency_key) devolve a existente sem tocar o backend.
@@ -360,11 +451,9 @@ def test_execucao_e_idempotente(client, session, app):
 
 def test_pre_validacao_reprovada_nao_executa_nem_persiste(client, session, app):
     """`--validate-file` roda SEMPRE antes de executar — se ela falhar, a
-    execução real nunca acontece e nada fica gravado."""
-    from platform_api.ssh_backend import (
-        ExecutionResult,
-        InMemoryExecutionBackend,
-    )
+    execução real nunca acontece e nada fica gravado. É ela que dá sentido ao
+    200 devolvido antes do desfecho."""
+    from platform_api.ssh_backend import ExecutionResult, InMemoryExecutionBackend
 
     class BackendComValidacaoReprovada(InMemoryExecutionBackend):
         async def dispatch(self, request, execution_id):
@@ -376,8 +465,7 @@ def test_pre_validacao_reprovada_nao_executa_nem_persiste(client, session, app):
             return await super().dispatch(request, execution_id)
 
     app.state.execution_backend = BackendComValidacaoReprovada()
-    job = _job(session, environment="UAT")
-    _binding(session, "operator", "batch.operator")
+    job = _job(session)
 
     r = client.post("/executions", headers=_auth("operator"), json={
         "job_id": str(job.id), "dates_pattern": ["20260901"],
@@ -386,8 +474,9 @@ def test_pre_validacao_reprovada_nao_executa_nem_persiste(client, session, app):
     assert r.status_code == 422
     assert "pré-validação" in r.json()["detail"]
 
-    from catalog.db.models import Execution
     from sqlalchemy import func, select
+
+    from catalog.db.models import Execution
     assert session.scalar(select(func.count()).select_from(Execution)) == 0
     assert len(app.state.execution_backend.calls) == 1   # só a validação, nunca a real
 
@@ -398,12 +487,9 @@ def test_execucao_concorrente_no_mesmo_job_e_409(client, session):
     `pg_try_advisory_xact_lock` é por CONEXÃO: `session` (deste teste) e a
     sessão que o endpoint abre (via `session_factory`, outra conexão do pool)
     são conexões distintas — exatamente o cenário de duas requisições
-    concorrentes de verdade. O lock desta sessão só libera no rollback do
-    teardown do fixture `session`, então ele segue "segurando" durante a
-    chamada HTTP abaixo.
+    concorrentes de verdade.
     """
-    job = _job(session, environment="UAT")
-    _binding(session, "operator", "batch.operator")
+    job = _job(session)
 
     from platform_api import locking
     locking.try_lock_job(session, job.id)   # mantém o lock nesta conexão/transação
@@ -415,25 +501,45 @@ def test_execucao_concorrente_no_mesmo_job_e_409(client, session):
     assert r.status_code == 409
 
 
+def test_execucao_com_outra_em_andamento_e_409(client, session):
+    """A segunda trava, que o lock advisory não dá mais: ele morre no commit,
+    e o `main.sh` continua rodando depois disso."""
+    from catalog.db.models import Execution
+
+    job = _job(session)
+    session.add(Execution(
+        job_id=job.id, trigger="manual", requested_steps=[], dates_pattern=["20260901"],
+        status="running", requested_by="outro", backend="ssh", host=HOST,
+        started_at=datetime.now(timezone.utc),
+    ))
+    session.commit()
+
+    r = client.post("/executions", headers=_auth("operator"), json={
+        "job_id": str(job.id), "dates_pattern": ["20260902"],
+        "confirm_target_dates": True, "justification": "segunda",
+    })
+    assert r.status_code == 409
+    assert "execução em andamento" in r.json()["detail"]
+
+
 def test_execucao_com_metacaractere_e_422_sem_persistir(client, session):
-    job = _job(session, environment="UAT")
-    _binding(session, "operator", "batch.operator")
+    job = _job(session)
     r = client.post("/executions", headers=_auth("operator"), json={
         "job_id": str(job.id), "steps": "1;rm -rf /", "dates_pattern": ["20260901"],
         "confirm_target_dates": True, "justification": "teste",
     })
     assert r.status_code == 422
 
-    from catalog.db.models import Execution
     from sqlalchemy import func, select
+
+    from catalog.db.models import Execution
     assert session.scalar(select(func.count()).select_from(Execution)) == 0
 
 
 # --- change-requests --------------------------------------------------------
 
 def test_listar_e_cancelar_change_request(client, session):
-    job = _job(session, environment="UAT")
-    _binding(session, "operator", "batch.operator")
+    job = _job(session)
     r = client.patch(f"/jobs/{job.id}/status", headers=_auth("operator"),
                      json={"desired_status": "disabled", "reason": "teste"})
     change_id = r.json()["id"]
@@ -450,7 +556,6 @@ def test_listar_e_cancelar_change_request(client, session):
 # --- auditoria ---------------------------------------------------------
 
 def test_audit_events_exige_admin(client, session):
-    _binding(session, "operator", "batch.operator")
     r = client.get("/audit-events", headers=_auth("operator"))
     assert r.status_code == 403
 
@@ -458,32 +563,134 @@ def test_audit_events_exige_admin(client, session):
     assert r2.status_code == 200
 
 
-# --- /me (Back Office, Etapa 1.4) ---------------------------------------
+# --- /admin (CRUD, G6) --------------------------------------------------
 
-def test_me_sem_binding_nenhum_escopo_visivel(client, session):
-    r = client.get("/me", headers=_auth("viewer"))
+def test_admin_exige_role_admin(client, session):
+    r = client.get("/admin/jobs", headers=_auth("operator"))
+    assert r.status_code == 403
+    assert "batch.admin" in r.json()["detail"]
+
+
+def test_admin_cria_job_no_ambiente_da_instancia(client, session):
+    r = client.post("/admin/jobs", headers=_auth("admin-batch"), json={
+        "process_name": "uat_novo_col_rpt",
+        "contract_path": f"{FW}/processes/reportes/uat_novo_col_rpt.json",
+        "domain": "reportes", "client_code": "aaa",
+        "reason": "onboarding do cliente aaa",
+    })
+    assert r.status_code == 201, r.text
+    corpo = r.json()
+    # host/environment NÃO são campos de entrada: vêm da instância.
+    assert corpo["environment"] == "UAT"
+    assert corpo["host"] == HOST
+
+    from sqlalchemy import select
+
+    from catalog.db.models import AuditEvent
+    acoes = list(session.scalars(
+        select(AuditEvent.action).where(AuditEvent.target_id == corpo["id"])
+    ))
+    assert "job.create" in acoes
+
+
+def test_admin_recusa_contrato_fora_de_processes(client, session):
+    r = client.post("/admin/jobs", headers=_auth("admin-batch"), json={
+        "process_name": "uat_x", "contract_path": "/tmp/uat_x.json",
+        "reason": "teste",
+    })
+    assert r.status_code == 422
+    assert "processes/" in r.json()["detail"]
+
+
+def test_admin_recusa_duplicado(client, session):
+    corpo = {
+        "process_name": "uat_dup", "contract_path": f"{FW}/processes/otros/uat_dup.json",
+        "domain": "otros", "reason": "teste",
+    }
+    assert client.post("/admin/jobs", headers=_auth("admin-batch"), json=corpo).status_code == 201
+    r = client.post("/admin/jobs", headers=_auth("admin-batch"), json=corpo)
+    assert r.status_code == 409
+
+
+def test_admin_atualiza_e_gera_revisao(client, session):
+    job = _job(session)
+    r = client.patch(f"/admin/jobs/{job.id}", headers=_auth("admin-batch"),
+                     json={"owner": "time-batch@contabilizei", "criticality": "alta",
+                           "reason": "curadoria de owner"})
+    assert r.status_code == 200
+    assert r.json()["owner"] == "time-batch@contabilizei"
+
+    from sqlalchemy import select
+
+    from catalog.db.models import JobRevision
+    revisoes = list(session.scalars(select(JobRevision).where(JobRevision.job_id == job.id)))
+    assert revisoes and revisoes[-1].diff.get("owner") is None   # antes era nulo
+
+
+def test_admin_delete_desativa_sem_apagar(client, session):
+    job = _job(session)
+    r = client.request("DELETE", f"/admin/jobs/{job.id}", headers=_auth("admin-batch"),
+                       json={"reason": "cliente encerrou contrato"})
+    assert r.status_code == 200
+    assert r.json()["status"] == "disabled"
+
+    from catalog.db.models import Job
+    session.expire_all()
+    assert session.get(Job, job.id) is not None          # a linha continua lá
+
+
+def test_admin_nao_administra_job_de_outro_ambiente(client, session):
+    job = _job(session, environment="PROD")
+    r = client.patch(f"/admin/jobs/{job.id}", headers=_auth("admin-batch"),
+                     json={"owner": "x", "reason": "teste"})
+    assert r.status_code == 403
+
+
+def test_admin_publica_contrato_validado_e_append_only(client, session):
+    job = _job(session)
+    contrato = _contrato()
+    contrato["description"] = "nova versao"
+
+    r = client.put(f"/admin/jobs/{job.id}/contract", headers=_auth("admin-batch"),
+                   json={"contract": contrato, "reason": "correcao de step"})
+    assert r.status_code == 200, r.text
+    assert r.json()["version"] == 2
+
+    # Republicar o MESMO conteúdo não cria versão nova (append-only por hash).
+    r2 = client.put(f"/admin/jobs/{job.id}/contract", headers=_auth("admin-batch"),
+                    json={"contract": contrato, "reason": "reenvio"})
+    assert r2.json()["version"] == 2
+
+
+def test_admin_recusa_contrato_invalido(client, session):
+    job = _job(session)
+    r = client.put(f"/admin/jobs/{job.id}/contract", headers=_auth("admin-batch"),
+                   json={"contract": {"name_process": "x"}, "reason": "teste"})
+    assert r.status_code == 422
+
+
+# --- /me (Back Office) --------------------------------------------------
+
+def test_me_devolve_roles_e_o_escopo_do_deploy(client, session):
+    r = client.get("/me", headers=_auth("operator"))
     assert r.status_code == 200
     corpo = r.json()
-    assert corpo["subject"] == "viewer"
-    assert "batch.viewer" in corpo["roles"]
-    assert corpo["visible_domains"] == []
-    assert corpo["visible_environments"] == []
+    assert corpo["subject"] == "operator"
+    assert "batch.operator" in corpo["roles"]
+    assert corpo["environment"] == "UAT"
+    assert corpo["host"] == HOST
+    assert corpo["is_admin"] is False
 
 
-def test_me_binding_sem_escopo_e_todos_os_dominios(client, session):
-    _binding(session, "viewer", "batch.viewer")   # sem scope_domain/scope_environment
-    r = client.get("/me", headers=_auth("viewer"))
-    corpo = r.json()
-    assert corpo["visible_domains"] is None          # None = todos
-    assert corpo["visible_environments"] is None
+def test_me_marca_admin(client, session):
+    corpo = client.get("/me", headers=_auth("admin-batch")).json()
+    assert corpo["is_admin"] is True
 
 
-def test_me_binding_escopado_lista_so_o_escopo(client, session):
-    _binding(session, "operator", "batch.operator", scope_domain="reportes", scope_environment="UAT")
-    r = client.get("/me", headers=_auth("operator"))
-    corpo = r.json()
-    assert corpo["visible_domains"] == ["reportes"]
-    assert corpo["visible_environments"] == ["UAT"]
+def test_health_identifica_o_deploy(client):
+    corpo = client.get("/health").json()
+    assert corpo["environment"] == "UAT"
+    assert corpo["host"] == HOST
 
 
 # --- /jobs/{id}/schedules, /contract, /reconciliation (Back Office) ------
@@ -492,9 +699,8 @@ def test_job_schedules_endpoint(client, session):
     from catalog.db.models import JobSchedule
 
     job = _job(session)
-    _binding(session, "viewer", "batch.viewer")
     session.add(JobSchedule(
-        job_id=job.id, schedule_expr="0 2 * * *", timezone="America/Lima",
+        job_id=job.id, schedule_expr="0 2 * * *", timezone="America/Bogota",
         raw_line="0 2 * * * /fw/schedulers/reportes/prd_aaa_col_rpt.sh", created_by="teste",
     ))
     session.commit()
@@ -506,8 +712,6 @@ def test_job_schedules_endpoint(client, session):
 
 def test_job_contract_endpoint(client, session):
     job = _job(session)
-    _binding(session, "viewer", "batch.viewer")
-
     r = client.get(f"/jobs/{job.id}/contract", headers=_auth("viewer"))
     assert r.status_code == 200
     assert r.json()["contract"]["name_process"] == "reportes"
@@ -518,7 +722,6 @@ def test_job_contract_endpoint_sem_versao_e_404(client, session):
     job = _job(session)
     job.current_contract_version_id = None
     session.commit()
-    _binding(session, "viewer", "batch.viewer")
 
     r = client.get(f"/jobs/{job.id}/contract", headers=_auth("viewer"))
     assert r.status_code == 404
@@ -526,8 +729,6 @@ def test_job_contract_endpoint_sem_versao_e_404(client, session):
 
 def test_job_reconciliation_nunca_rodou(client, session):
     job = _job(session)
-    _binding(session, "viewer", "batch.viewer")
-
     r = client.get(f"/jobs/{job.id}/reconciliation", headers=_auth("viewer"))
     assert r.status_code == 200
     assert r.json()["state"] == "nunca_rodou"
@@ -539,9 +740,8 @@ def test_job_reconciliation_ok_e_divergente(client, session):
 
     job_ok = _job(session, process_name="prd_ok_col_rpt")
     job_divergente = _job(session, process_name="prd_div_col_rpt")
-    _binding(session, "viewer", "batch.viewer")
 
-    run = ReconciliationRun(host="srv-sftp-2", triggered_by="teste")
+    run = ReconciliationRun(host=HOST, triggered_by="teste")
     session.add(run)
     session.flush()
     session.add(ReconciliationFinding(
@@ -563,9 +763,7 @@ def test_job_reconciliation_finding_explicado_nao_conta_como_divergente(client, 
     from catalog.db.models import ReconciliationFinding, ReconciliationRun
 
     job = _job(session)
-    _binding(session, "viewer", "batch.viewer")
-
-    run = ReconciliationRun(host="srv-sftp-2", triggered_by="teste")
+    run = ReconciliationRun(host=HOST, triggered_by="teste")
     session.add(run)
     session.flush()
     session.add(ReconciliationFinding(

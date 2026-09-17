@@ -13,7 +13,14 @@ from sqlalchemy.orm import Session
 
 from catalog.db.models import Job
 
-from .authz import NotAuthorized, Scope, require_operate, require_view, resolve_scope
+from .authz import (
+    NotAuthorized,
+    Scope,
+    require_admin,
+    require_operate,
+    require_view,
+    resolve_scope,
+)
 from .security import AuthenticatedUser, TokenInvalid, TokenVerifier
 
 _bearer = HTTPBearer(auto_error=False)
@@ -48,10 +55,20 @@ def get_current_user(
 
 
 def get_scope(
+    request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
-    session: Session = Depends(get_session),
 ) -> Scope:
-    return resolve_scope(session, user)
+    """Escopo = roles do Entra × ambiente/host desta instância. Não toca banco:
+    desde que o RBAC passou a vir inteiro do Entra, não há linha para ler."""
+    return resolve_scope(user, request.app.state.settings)
+
+
+def require_admin_scope(scope: Scope = Depends(get_scope)) -> Scope:
+    try:
+        require_admin(scope)
+    except NotAuthorized as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, exc.detail) from exc
+    return scope
 
 
 def get_execution_backend(request: Request):

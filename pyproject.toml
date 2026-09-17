@@ -22,6 +22,9 @@ api = [
     "cachetools>=5.5",
     "asyncssh>=2.16",
 ]
+# Agente APM. Opcional de propósito: `telemetry.py` funciona sem ele (vira
+# no-op) para que teste e desenvolvimento não dependam de telemetria.
+newrelic = ["newrelic>=10.0"]
 
 [project.scripts]
 catalog = "catalog.cli:app"

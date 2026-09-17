@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from catalog.db.models import AuditEvent, CrontabChangeRequest, Job
 
-from ..authz import Scope, binding_matches
+from ..authz import Scope
 from ..deps import get_current_user, get_scope, get_session
 from ..schemas import ChangeRequestOut
 from ..security import AuthenticatedUser
@@ -49,7 +49,7 @@ def listar(
         if pedido.job_id not in jobs:
             jobs[pedido.job_id] = session.get(Job, pedido.job_id)
         job = jobs[pedido.job_id]
-        return job is not None and any(binding_matches(b, job) for b in scope.bindings)
+        return job is not None and scope.can_view(job)
 
     return [p for p in pedidos if _visivel(p)]
 

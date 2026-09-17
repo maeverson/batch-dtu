@@ -1,6 +1,12 @@
 # Platform API — Contrato REST (rascunho)
 
-Autenticação: **Entra ID (OIDC)**. Autorização: roles `batch.*` com escopo domínio/ambiente. **O contrato não muda entre fases** — apenas o backend (Fase 1: SSH parametrizado contra o legado; Fase 2: enfileiramento no orchestrator).
+Autenticação e autorização: **Entra ID (OIDC)** — as app roles `batch.*` do token são a
+autorização inteira. **O contrato não muda entre fases** — apenas o backend (Fase 1: SSH
+parametrizado contra o legado; Fase 2: enfileiramento no orchestrator).
+
+**Uma instância serve um ambiente e um host.** `PLATFORM_ENVIRONMENT`/`PLATFORM_HOST` definem o
+recorte: UAT e PROD são deploys distintos, e um job fora do recorte não é listado nem operado —
+nem por `batch.admin`. `GET /health` e `GET /me` dizem qual recorte respondeu.
 
 ## Recursos
 
@@ -46,10 +52,10 @@ Ciclo: `pending → applied → verified` (+ `cancelled`, `expired`). A verifica
 
 ### Execuções
 ```
-POST   /executions                # dispara execução manual
+POST   /executions                # despacha execução manual — 200 imediato
 GET    /executions?job_id=&from=&to=&result=
 GET    /executions/{id}
-GET    /executions/{id}/logs      # proxy de consulta Loki por execution_id
+GET    /executions/{id}/logs      # consulta por execution_id (New Relic; Loki no dev local)
 ```
 
 Payload de `POST /executions`:
@@ -64,8 +70,16 @@ Payload de `POST /executions`:
 }
 ```
 
+**`POST /executions` responde `200` com `status: "running"` assim que despacha** — a resposta é o
+comprovante do despacho, não o desfecho. O `main.sh` segue rodando no host; o desfecho cai em
+`GET /executions/{id}` e o acompanhamento em tempo real é no New Relic, pelo `execution_id`
+(evento `BatchExecution` + log correlacionado).
+
 Regras:
-- Pré-validação (`--validate-file`) sempre antes de executar.
+- Pré-validação (`--validate-file`) sempre antes de executar — **síncrona**, e é ela que dá
+  sentido ao 200: nada é despachado sem o `main.sh` real ter aprovado o contrato.
+- Duas travas de concorrência: lock advisory na janela de registro e **409 quando o job já tem
+  execução `running`** (o lock morre no commit; o `main.sh` não).
 - Múltiplas datas são **serializadas** e a API **impede concorrência por processo** (formalização do laço do SOP Zinli).
 - Steps `upload_remote` em PROD: confirmação reforçada (Fase 1) → aprovação two-person (Fase 3, recurso `approvals`).
 
@@ -76,6 +90,19 @@ GET    /approvals?status=pending
 POST   /approvals/{id}/decision    # approve | reject + justificativa (aprovador ≠ solicitante)
 ```
 
+### Administração (`batch.admin`)
+```
+GET    /admin/jobs?q=&domain=&status=   # todos os jobs do recorte da instância
+POST   /admin/jobs                      # cria — host/environment vêm da instância
+PATCH  /admin/jobs/{id}                 # atualiza metadados (reason obrigatório)
+DELETE /admin/jobs/{id}                 # DESATIVA no catálogo; não apaga linha nenhuma
+PUT    /admin/jobs/{id}/contract        # nova versão do contrato, validada pelo schema
+```
+
+Toda escrita exige `reason` e gera `audit_event` + `job_revision` na mesma transação. `DELETE` não
+remove: job tem execução, auditoria e histórico apontando para ele. E desativar no catálogo **não
+para o cron** — isso é `PATCH /jobs/{id}/status`.
+
 ### Auditoria
 ```
 GET    /audit-events?actor=&action=&target=&from=&to=   # append-only, somente leitura
@@ -83,7 +110,7 @@ GET    /audit-events?actor=&action=&target=&from=&to=   # append-only, somente l
 
 ### Identidade
 ```
-GET    /me   # subject, roles do token, domínios/ambientes visíveis (mesmo Scope de authz.py)
+GET    /me   # subject, display_name, roles do token, environment/host da instância, is_admin
 ```
 
 Usado pelo Back Office para renderização condicionada a role sem duplicar a regra de autorização
@@ -95,6 +122,7 @@ que o 403 recusaria.
 - Executa via SSH parametrizado contra o host legado, conta `backoffice_svc`, `authorized_keys` com `command=` apontando para wrapper que só aceita invocações válidas de `main.sh`.
 - A API monta a linha de comando **apenas** a partir de campos tipados; o wrapper revalida server-side. Nunca interpolar entrada livre do usuário.
 - Toda chamada gera `execution` + `audit_event` e injeta `execution_id` no nome do arquivo de log.
+- A confiança no canal é chave pública + `known_hosts` (`SSH_BACKEND_KNOWN_HOSTS`, obrigatório: sem ele a API não sobe).
 
 **Como o `execution_id` chega ao log, sem tocar no legado.** O `main.sh` real **não aceita** identificador de execução — flag desconhecida é fatal nele (`Opcion desconocida` → `main_help` → `exit`), então repassá-la faria *toda* execução via API falhar antes do primeiro step. Quem controla o redirecionamento é o wrapper do `command=`: ele recebe `--execution-id` da API, **não o repassa**, e usa o valor para nomear o próprio arquivo (`logs/backoffice/<domínio>/<processo>.<execution_id>.log`), com `tee` para preservar o stream que a API acompanha e `PIPESTATUS` para não mascarar o código de saída do job. A linha `ALLOW` da auditoria do wrapper liga `execution_id` ↔ arquivo.
 

@@ -1,132 +1,135 @@
-"""Resolução de escopo — `role_binding`, não claim de token.
+"""Autorização — **as roles do Entra ID são a única fonte** (decisão do cliente).
 
-O token do IdP prova **identidade** e a classe de role que a organização
-concedeu (`realm_access.roles` / Entra App Roles). Ele NÃO prova em que
-domínio/ambiente/host essa role vale — isso é o que `role_binding` audita, e é
-por isso que toda checagem aqui exige uma LINHA na tabela, nunca só a
-presença da role no token. Sem essa linha, a role é uma entitlement genérica
-sem escopo concreto, e não autoriza nada.
+O que mudou em relação ao desenho anterior: não existe mais consulta a
+`role_binding` em runtime. O token do Entra prova identidade E entitlement, e
+a dimensão que antes o binding restringia (ambiente/host) agora é resolvida
+pelo DEPLOY: cada instância serve um ambiente e um host
+(`PLATFORM_ENVIRONMENT`/`PLATFORM_HOST` em `config.py`). Operar PROD e operar
+UAT são instâncias distintas, com app registrations e grupos distintos no
+Entra.
 
-`NULL` numa dimensão do binding = essa dimensão não restringe (todas as
-domínio/ambiente/host). Conceder um binding sempre restringe a partir de
-"tudo"; nunca amplia além do que a role do token já permite.
+Consequência honesta desse desenho, para quem for auditar: **não há mais
+escopo por domínio**. Um `batch.operator` alcança todo job do ambiente daquela
+instância. Se a operação precisar de "operador só de /reportes", isso volta a
+exigir uma dimensão que o Entra não carrega hoje — ou app roles por domínio,
+ou a tabela de binding de volta. A tabela `role_binding` continua existindo no
+schema (migration aplicada), mas **nenhum código a lê**.
+
+Mapa de roles (`docs/seguranca.md`), exatamente como o `value` da app role:
+
+| role | pode |
+|---|---|
+| `batch.viewer` | ver catálogo, execuções e logs |
+| `batch.operator` | + executar/reprocessar em ambiente não-PROD |
+| `batch.operator-prod` | + executar/reprocessar em PROD |
+| `batch.admin` | + CRUD de catálogo e leitura de auditoria |
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from catalog.db.models import Job
 
-from catalog.db.models import Job, RoleBinding
-
+from .config import PROD_ENVIRONMENTS, Settings
 from .security import AuthenticatedUser
 
-# Ambiente cujo escopo de execução/escrita exige `batch.operator-prod`. Todo
-# outro ambiente (UAT/TEST/DEV) aceita `batch.operator`. Reflete
-# docs/seguranca.md: "`batch.operator-prod`: Operar em PROD".
-_PROD_ENVIRONMENTS = frozenset({"PROD"})
+VIEWER = "batch.viewer"
+OPERATOR = "batch.operator"
+OPERATOR_PROD = "batch.operator-prod"
+ADMIN = "batch.admin"
+
+ALL_ROLES = frozenset({VIEWER, OPERATOR, OPERATOR_PROD, ADMIN})
 
 
 def required_operate_role(environment: str | None) -> str:
-    return "batch.operator-prod" if environment in _PROD_ENVIRONMENTS else "batch.operator"
-
-
-def active_bindings(session: Session, subject: str) -> list[RoleBinding]:
-    return list(
-        session.scalars(
-            select(RoleBinding).where(
-                RoleBinding.subject == subject, RoleBinding.revoked_at.is_(None)
-            )
-        )
-    )
-
-
-def binding_matches(binding: RoleBinding, job: Job) -> bool:
-    """Público de propósito: routers/jobs.py reaproveita para o filtro de
-    listagem — duplicar esta regra em SQL seria uma segunda fonte de verdade."""
-    if binding.scope_domain is not None and binding.scope_domain != job.domain:
-        return False
-    if binding.scope_environment is not None and binding.scope_environment != job.environment:
-        return False
-    if binding.scope_host is not None and binding.scope_host != job.host:
-        return False
-    return True
-
-
-_matches = binding_matches  # nome curto para uso interno neste módulo
-
-
-@dataclass(frozen=True)
-class Scope:
-    """Escopo resolvido de um usuário — bindings já carregados do banco."""
-
-    subject: str
-    token_roles: frozenset[str]
-    bindings: tuple[RoleBinding, ...]
-
-    def can_view(self, job: Job) -> bool:
-        """Qualquer binding ativo, de qualquer role, dá visibilidade — ver o
-        job é o piso de toda role, inclusive `batch.viewer`."""
-        return any(_matches(b, job) for b in self.bindings)
-
-    def can_operate(self, job: Job) -> bool:
-        """Execução manual, enable/disable: precisa da role adequada ao
-        ambiente do job (PROD exige operator-prod) NO TOKEN, e um binding
-        concreto — de `batch.admin` ou da role exigida — cobrindo esse job."""
-        needed = required_operate_role(job.environment)
-        if needed not in self.token_roles and "batch.admin" not in self.token_roles:
-            return False
-        return any(
-            _matches(b, job) and b.role in (needed, "batch.admin") for b in self.bindings
-        )
-
-    def is_admin_for(self, job: Job) -> bool:
-        return "batch.admin" in self.token_roles and any(
-            _matches(b, job) and b.role == "batch.admin" for b in self.bindings
-        )
-
-    def visible_domains(self) -> set[str] | None:
-        """None = todos os domínios (algum binding sem `scope_domain`)."""
-        if any(b.scope_domain is None for b in self.bindings):
-            return None
-        return {b.scope_domain for b in self.bindings if b.scope_domain}
-
-    def visible_environments(self) -> set[str] | None:
-        if any(b.scope_environment is None for b in self.bindings):
-            return None
-        return {b.scope_environment for b in self.bindings if b.scope_environment}
-
-
-def resolve_scope(session: Session, user: AuthenticatedUser) -> Scope:
-    return Scope(
-        subject=user.subject,
-        token_roles=user.roles,
-        bindings=tuple(active_bindings(session, user.subject)),
-    )
+    return OPERATOR_PROD if environment in PROD_ENVIRONMENTS else OPERATOR
 
 
 class NotAuthorized(Exception):
-    """Token válido, mas sem escopo para a ação — vira 403, nunca 401."""
+    """Token válido, mas sem role para a ação — vira 403, nunca 401."""
 
     def __init__(self, detail: str):
         self.detail = detail
         super().__init__(detail)
 
 
+@dataclass(frozen=True)
+class Scope:
+    """Escopo efetivo: roles do token × ambiente/host desta instância."""
+
+    subject: str
+    display_name: str | None
+    token_roles: frozenset[str]
+    environment: str
+    host: str
+
+    # -- pertinência ao deploy ------------------------------------------------
+    def serves(self, job: Job) -> bool:
+        """O job é deste deploy? Um job de PROD nunca é servido pela instância
+        de UAT, nem com `batch.admin` — a separação é do deploy, não da role,
+        e é ela que garante que o canal SSH desta instância só alcança o host
+        que ela declara operar."""
+        return job.environment == self.environment and job.host == self.host
+
+    # -- decisões -------------------------------------------------------------
+    @property
+    def is_admin(self) -> bool:
+        return ADMIN in self.token_roles
+
+    def can_view(self, job: Job) -> bool:
+        return self.serves(job) and bool(self.token_roles & ALL_ROLES)
+
+    def can_operate(self, job: Job) -> bool:
+        if not self.serves(job):
+            return False
+        if self.is_admin:
+            return True
+        return required_operate_role(job.environment) in self.token_roles
+
+    # -- para a UI (`GET /me`) ------------------------------------------------
+    def visible_environments(self) -> list[str]:
+        return [self.environment]
+
+    def visible_hosts(self) -> list[str]:
+        return [self.host]
+
+
+def resolve_scope(user: AuthenticatedUser, settings: Settings) -> Scope:
+    return Scope(
+        subject=user.subject,
+        display_name=user.display_name,
+        token_roles=user.roles,
+        environment=settings.environment,
+        host=settings.host,
+    )
+
+
 def require_view(scope: Scope, job: Job) -> None:
+    if not scope.serves(job):
+        raise NotAuthorized(
+            f"job de {job.host}/{job.environment} não é servido por esta instância "
+            f"({scope.host}/{scope.environment})"
+        )
     if not scope.can_view(job):
         raise NotAuthorized(
-            f"sujeito '{scope.subject}' sem role_binding cobrindo "
-            f"{job.host}/{job.domain}/{job.environment}"
+            f"'{scope.subject}' não tem nenhuma role batch.* no token do Entra ID"
         )
 
 
 def require_operate(scope: Scope, job: Job) -> None:
-    if not scope.can_operate(job):
-        needed = required_operate_role(job.environment)
+    if not scope.serves(job):
         raise NotAuthorized(
-            f"operar {job.process_name} ({job.environment}) exige '{needed}' "
-            f"com role_binding cobrindo {job.host}/{job.domain}/{job.environment}"
+            f"job de {job.host}/{job.environment} não é servido por esta instância "
+            f"({scope.host}/{scope.environment})"
         )
+    if not scope.can_operate(job):
+        raise NotAuthorized(
+            f"operar {job.process_name} ({job.environment}) exige a app role "
+            f"'{required_operate_role(job.environment)}' no Entra ID"
+        )
+
+
+def require_admin(scope: Scope) -> None:
+    if not scope.is_admin:
+        raise NotAuthorized(f"esta ação exige a app role '{ADMIN}' no Entra ID")

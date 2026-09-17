@@ -44,7 +44,7 @@ Um registro por invocação — **inclusive execuções do legado disparadas via
 Separa divergência **esperada** (mudança em andamento) de **drift não gerenciado** (alguém editou
 o crontab por fora). Sem esta entidade, a reconciliação só sabe dizer `catálogo ≠ crontab`.
 
-## `role_binding`
+## `role_binding` — **inativa desde 17/09/2026**
 
 | Campo | Notas |
 |---|---|
@@ -53,8 +53,15 @@ o crontab por fora). Sem esta entidade, a reconciliação só sabe dizer `catál
 | `scope_domain`, `scope_environment`, `scope_host` | **`NULL` = todas**. Conceder escopo restringe |
 | `granted_by`, `revoked_at`, `revoked_by` | Revogação é soft: a trilha permanece |
 
-O escopo mora no catálogo, e não em grupos do Entra, porque a pergunta operacional — "quem pode
-executar este job" — se responde por domínio/ambiente/host do próprio job.
+**A tabela continua no schema, mas nenhum código a lê.** Por decisão do cliente, o RBAC passou a
+vir inteiro do Entra ID: a app role do token autoriza, e a dimensão ambiente/host vem do deploy
+(uma instância da API serve um ambiente e um host). A tabela não foi removida porque a migration
+já está aplicada e dropar tabela com histórico não é operação que se faça por conveniência —
+mas tratá-la como fonte de permissão seria erro. Ver `docs/seguranca.md` e
+`modules/platform-api/CLAUDE.md`.
+
+O que se perdeu com isso, e que esta tabela resolvia: **escopo por domínio**. As app roles do
+Entra são planas.
 
 ## `audit_event`
 

@@ -51,7 +51,7 @@ Consequências práticas:
 3. **Execução como dado.** Toda execução (agendada, manual, reprocesso, evento) gera registro estruturado: quem, quando, qual processo, quais steps, data-alvo, resultado, link de logs (`execution_id`).
 4. **Nenhum acesso humano direto ao plano de execução.** Operação via Back Office, autenticada por Entra ID e autorizada por role. SSH é exceção break-glass auditada.
 5. **Segredos em vault, nunca em arquivos ou contratos.** Contratos referenciam apenas *aliases*; o executor resolve em runtime.
-6. **Observabilidade nativa, desacoplada de arquivos.** Base Grafana Cloud (Loki/Mimir) permanece; muda a fonte: logs estruturados por execução com `execution_id`, métricas emitidas pelo executor, alertas de execução *ausente* (não só de erro).
+6. **Observabilidade nativa, desacoplada de arquivos.** Backend da plataforma é **New Relic** (decisão de 17/09/2026; o Grafana Cloud permanece para o que já monitorava, e o compose local segue com Loki); muda a fonte: logs estruturados por execução com `execution_id`, métricas emitidas pelo executor, alertas de execução *ausente* (não só de erro).
 7. **Idempotência e reprocessamento como cidadãos de primeira classe.** Semântica `--dates-pattern-files` + `--manual-steps` vira API formal, com validação de data-alvo e salvaguardas contra reenvio acidental a clientes.
 
 ## Regras para desenvolvimento (Claude Code)
@@ -59,10 +59,10 @@ Consequências práticas:
 - **Siga a ordem do `ROADMAP.md`.** Não inicie um módulo cujas dependências bloqueantes não estejam concluídas. Etapa atual: Fase 1, iniciando por `modules/job-catalog/`.
 - **Contrato da Platform API não muda entre fases.** Na Fase 1 ela traduz para SSH parametrizado; na Fase 2, enfileira no orchestrator. O Back Office nunca deve conhecer o mecanismo de execução.
 - **A API nunca interpola shell arbitrário.** Invocações são construídas a partir de campos tipados (processo do catálogo + steps + data); o wrapper server-side revalida (Fase 1).
-- **Catálogo é a fonte da verdade** para agendamento, RBAC (escopo domínio/cliente) e dashboards. A partir da Fase 2, crontab é artefato gerado/reconciliado, nunca editado manualmente.
+- **Catálogo é a fonte da verdade** para agendamento e dashboards. A partir da Fase 2, crontab é artefato gerado/reconciliado, nunca editado manualmente. **RBAC não mora aqui**: desde 17/09/2026 vem inteiro do Entra ID (app roles), e a dimensão ambiente/host vem do deploy — uma instância da Platform API serve um ambiente e um host (`docs/seguranca.md`, `modules/platform-api/CLAUDE.md`).
 - **Paridade funcional do Executor v3 com `main.sh` é obrigatória** e verificada por suíte de testes de contrato + shadow execution com diff de artefatos antes de cada cutover.
 - Steps que fazem upload a clientes (`upload_remote`) exigem confirmação reforçada (Fase 1) e aprovação two-person (Fase 3).
-- Ambientes (PROD/UAT/TEST/DEV) devem ser tratados como dimensão explícita em catálogo, RBAC e (Fase 3) compute isolado. **Medido nos dois hosts em 09/2026**: PROD é puro (597/597 PROD), mas o host de UAT **mistura de verdade** — UAT 378, TEST 159, **PROD 2**, DEV 1. Logo a dimensão não é só para atravessar hosts: dentro do host de UAT ela é a única coisa que separa um job de teste de um job que declara produção.
+- Ambientes (PROD/UAT/TEST/DEV) devem ser tratados como dimensão explícita em catálogo, no recorte de cada deploy da API e (Fase 3) em compute isolado. **Medido nos dois hosts em 09/2026**: PROD é puro (597/597 PROD), mas o host de UAT **mistura de verdade** — UAT 378, TEST 159, **PROD 2**, DEV 1. Logo a dimensão não é só para atravessar hosts: dentro do host de UAT ela é a única coisa que separa um job de teste de um job que declara produção.
 - **Ao concluir uma entrega**, marque o checkbox correspondente no `ROADMAP.md` e verifique se o marco da etapa (🏁) foi atingido antes de avançar de fase.
 
 ## Mapa do repositório
@@ -85,6 +85,7 @@ decisão está registrada.
 | `migrations/` | Alembic — schema `catalog`, incluindo o append-only de auditoria por trigger + `REVOKE` |
 | `tests/` | Suíte pytest (schema de contrato, parser, banco, wrapper legado, Platform API) |
 | `seed/` | Coletor (`seed/collect/`), vocabulário de curadoria (`seed/mappings/`) e pacotes coletados dos hosts (`seed/raw/`, **gitignored**: contêm nome de cliente, IP e caminho interno) |
+| `deploy/` | Configuração por serviço/módulo (Entra ID, host do `main.sh`, New Relic, RDS). As variáveis sobem **com o serviço**, nunca exportadas na sessão do host — ver `deploy/README.md` |
 | `docker/` + `docker-compose.yaml` | Ambiente de desenvolvimento local por profile (postgres, loki/grafana/prometheus, keycloak, minio/sftp, vault). Referência: `docker/README.md` |
 | `docker/legacy/` | **Host legado simulado** — `main.sh` stub + `batch-wrapper.sh` (`command=` restrito) + fixtures. **Não é módulo da plataforma**: é o fixture contra o qual o backend SSH da Fase 1 é desenvolvido e verificado, sem tocar produção. É também o que falta de pé para o marco 🏁 da Fase 1 (reprocesso fim-a-fim) |
 

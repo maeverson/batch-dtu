@@ -30,6 +30,27 @@ Abra `http://localhost:5173`. Login redireciona para o Keycloak local; usuários
 `modules/platform-api/OPERACAO.md`. **Sem uma linha em `role_binding` para o subject**, o login
 funciona mas o catálogo aparece vazio (mesma regra do backend — ver `CLAUDE.md`).
 
+## Entra ID — o escopo do login (o erro caro)
+
+No Keycloak local o escopo default (`openid profile email`) basta, porque a audiência
+`platform-api` vem de um protocol mapper do realm. **No Entra ID não basta**: sem pedir
+`api://<client-id-da-api>/access_as_user`, o access token sai com audiência do Microsoft Graph e a
+Platform API recusa TODA chamada com 401 — com o login funcionando normalmente, que é o que torna
+esse erro caro de diagnosticar. Por isso o escopo é variável (`VITE_OIDC_SCOPE`, em
+`src/config.ts`), e `deploy/back-office/*.env.example` já traz a forma certa.
+
+Vite embute as variáveis em **build time**: trocar o arquivo depois do build não tem efeito.
+
+## Administração (`batch.admin`)
+
+`src/pages/AdminPage.tsx` — CRUD de catálogo contra `/admin/*`: criar job, editar metadados,
+desativar e publicar nova versão de contrato. A aba só aparece para `batch.admin` (`GET /me`), e a
+página repete o gate porque a URL pode ser digitada à mão. Ambiente e host não são campos: vêm da
+instância. Motivo é obrigatório em toda escrita.
+
+**Desativar não para o cron** — a tela diz isso no próprio prompt de confirmação, porque é a
+confusão que geraria incidente: o job segue rodando no host até a mudança de agenda ser aplicada.
+
 ## Por que um cliente OIDC separado do `platform-api`
 
 O realm (`docker/keycloak/realm-batch-dtu.json`) tem dois clientes: `platform-api` (confidencial,
@@ -47,18 +68,19 @@ cliente `back-office` do Keycloak. Subir o front em outra porta exige ajustar as
 
 ## O que "tempo real" quer dizer na Fase 1
 
-`POST /executions` é **síncrono** — só responde quando o SSH termina (`src/platform_api/routers/
-executions.py`). Na prática, pela hora em que a resposta chega no navegador, a execução já está em
-estado terminal; não existe um "acompanhar rodando" de verdade ainda (isso é trabalho de Fase 2,
-quando o backend vira assíncrono via orchestrator). O que a página de execução
-(`src/pages/ExecutionDetailPage.tsx`) faz hoje, honestamente:
+`POST /executions` **responde 200 assim que despacha** (`status: running`), sem esperar o
+`main.sh`. Então a página de execução (`src/pages/ExecutionDetailPage.tsx`) agora está
+acompanhando uma execução que de fato ainda está rodando — o polling deixou de ser um consolo e
+virou o mecanismo:
 
-- Reconsulta `GET /executions/{id}` a cada poucos segundos — útil se OUTRA aba/usuário está
-  olhando antes da chamada síncrona original terminar.
-- Reconsulta `GET /executions/{id}/logs` (proxy Loki) no mesmo ritmo — o promtail
-  (`docker/promtail/`, observability Etapa 1.3) tem um atraso de alguns segundos para embarcar o
-  `.log`, então linhas continuam chegando um pouco depois da execução já ter terminado. É esse
-  atraso, não streaming de verdade, que faz valer a pena continuar reconsultando.
+- Reconsulta `GET /executions/{id}` a cada poucos segundos até o estado terminal.
+- Reconsulta `GET /executions/{id}/logs` no mesmo ritmo — o agente de log (New Relic em ambiente
+  implantado, promtail no compose local) tem alguns segundos de atraso para embarcar o `.log`,
+  então linhas continuam chegando depois do desfecho.
+
+Continua não sendo stream de verdade (isso é Fase 2, com o orchestrator). E execução que **trava**
+não aparece aqui como erro: fica `running` para sempre. Quem avisa é o alerta do New Relic
+(`deploy/newrelic/README.md`), não esta tela.
 
 ## Verificar
 

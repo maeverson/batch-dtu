@@ -1,7 +1,7 @@
 import { NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from 'react-oidc-context'
 import { useMe } from '../api/hooks'
-import { roleLabel } from '../rbac'
+import { isAdmin, roleLabel } from '../rbac'
 
 export function Layout() {
   const auth = useAuth()
@@ -23,10 +23,23 @@ export function Layout() {
         <NavLink to="/mudancas" className={({ isActive }) => (isActive ? 'active' : '')}>
           Mudanças de agenda
         </NavLink>
+        {isAdmin(me) && (
+          <NavLink to="/admin" className={({ isActive }) => (isActive ? 'active' : '')}>
+            Administração
+          </NavLink>
+        )}
         <div className="app-nav__spacer" />
+        {/* Com um deploy por ambiente, qual ambiente esta tela opera é a
+            informação que evita o operador achar que está em UAT quando está
+            em PROD. Fica ao lado do usuário, sempre visível. */}
+        {me && (
+          <div className={`env-tag env-tag--${me.environment.toLowerCase()}`} title={`host ${me.host}`}>
+            {me.environment}
+          </div>
+        )}
         <div className="topbar-user">
           <div>
-            <strong>{me?.subject ?? auth.user?.profile.preferred_username}</strong>
+            <strong>{me?.display_name ?? me?.subject ?? auth.user?.profile.preferred_username}</strong>
             <div>{me?.roles.map(roleLabel).join(', ') || '—'}</div>
           </div>
         </div>

@@ -19,4 +19,7 @@ export const paths = {
   executionLogs: (id: string) => `/executions/${id}/logs`,
   changeRequests: (f: { state?: string; host?: string }) => `/change-requests${qs(f)}`,
   changeRequestCancel: (id: string) => `/change-requests/${id}/cancel`,
+  adminJobs: (f: { q?: string; domain?: string; status?: string }) => `/admin/jobs${qs(f)}`,
+  adminJob: (id: string) => `/admin/jobs/${id}`,
+  adminJobContract: (id: string) => `/admin/jobs/${id}/contract`,
 }

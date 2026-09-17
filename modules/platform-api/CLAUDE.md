@@ -5,12 +5,19 @@
 | Tema | Decisão |
 |---|---|
 | Stack | **Python + FastAPI** — reaproveita `catalog.db` (modelos, sessão, repositório) e a suíte que já roda contra Postgres real |
-| Autorização | Escopo em **`role_binding` no catálogo**, não em grupos do Entra ID. A pergunta operacional é "quem pode executar este job", e ela se responde por domínio/ambiente/host do próprio job — precisa ser consultável e auditável junto do catálogo |
+| Autorização | **Entra ID, inteira** (revisado em 17/09/2026 pelo cliente; antes era `role_binding` no catálogo). A app role do token autoriza; a dimensão ambiente/host vem do DEPLOY, não de uma linha de banco. `role_binding` continua no schema e **nenhum código a lê** |
+| Escopo do deploy | **Uma instância, um ambiente, um host** (`PLATFORM_ENVIRONMENT`/`PLATFORM_HOST`). UAT e PROD são deploys distintos. `Scope.serves()` corta antes de qualquer role — inclusive `batch.admin` |
+| Execução | `POST /executions` **responde 200 ao despachar**, não ao terminar. A pré-validação (`--validate-file`) continua síncrona; o acompanhamento é no New Relic por `execution_id` |
+| Administração | CRUD de catálogo em `/admin/*`, só `batch.admin`. `DELETE` desativa, nunca apaga |
 | Deploy | **EKS**, com VPC já configurada para alcançar os hosts legados por SSH |
 | `PATCH /jobs/{id}/status` | Grava o estado desejado no catálogo **e** abre um `crontab_change_request`; a aplicação é manual na Fase 1 e a verificação é automática (ver abaixo) |
 
-`NULL` em qualquer dimensão de escopo de `role_binding` significa **todas**. Conceder escopo
-sempre restringe, nunca amplia.
+**Como se concede acesso agora**: grupo no Entra ID atribuído à app role. Não existe mais
+`INSERT` em tabela nenhuma — e revogar é tirar o grupo, num lugar só.
+
+**O que se perdeu, explicitamente**: escopo por domínio. `batch.operator` alcança todo job do
+ambiente da instância. Se a operação pedir "operador só de /reportes", a decisão volta à mesa —
+app roles por domínio no Entra, ou a tabela de binding de volta.
 
 ## Ciclo de mudança de agendamento (Fase 1)
 
@@ -32,12 +39,13 @@ sempre restringe, nunca amplia.
 
 Na Fase 2 o executor do apply deixa de ser humano e vira pipeline; a máquina de estados sobrevive.
 
-**Operação do serviço**: `OPERACAO.md` neste diretório — como subir, autenticar, conceder
-`role_binding`, os endpoints, e como verificar sem depender do container `legacy`.
+**Operação do serviço**: `OPERACAO.md` neste diretório — como subir, autenticar, os endpoints, e
+como verificar sem depender do container `legacy`. **Implantação**:
+`../../docs/implantacao-fase-1.md` (Entra ID real, host do `main.sh`, New Relic) e `deploy/`.
 
 Contexto ao trabalhar aqui:
 - Leia `../../docs/api/platform-api.md` (contrato REST) e `../../docs/contrato-json.md` antes de qualquer implementação.
 - **O contrato REST não muda entre fases** — só o backend de execução (Fase 1: SSH parametrizado; Fase 2: enfileiramento no orchestrator). Isole o backend atrás de uma interface (`ExecutionBackend`) desde o dia 1.
 - **Nunca interpole shell arbitrário.** Linha de comando montada exclusivamente de campos tipados validados contra o catálogo.
 - Toda ação de escrita gera `audit_event` (append-only) e toda execução gera registro `execution` com `execution_id` propagado aos logs.
-- Autenticação: Entra ID (OIDC). Autorização: roles `batch.*` com escopo domínio/ambiente (ver `../../docs/seguranca.md`).
+- Autenticação e autorização: Entra ID (OIDC), roles `batch.*` do token (ver `../../docs/seguranca.md`).

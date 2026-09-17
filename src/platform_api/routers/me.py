@@ -1,12 +1,13 @@
-"""`GET /me` — identidade e escopo resolvido do usuário autenticado.
+"""`GET /me` — identidade, roles do Entra e escopo desta instância.
 
 O Back Office usa isto para renderização condicionada a role (SPEC, item
-"Renderização condicionada a role") sem duplicar a regra de `authz.py`: as
-roles vêm do token, `visible_domains`/`visible_environments` vêm do mesmo
-`Scope` que todo endpoint de escrita já usa para autorizar. Isto não é uma
-segunda fonte de verdade — é a MESMA fonte, só exposta para a UI decidir o
-que mostrar antes de tentar (o servidor continua sendo quem autoriza de
-fato; a UI só evita oferecer uma ação que o 403 recusaria).
+"Renderização condicionada a role") sem duplicar a regra de `authz.py`, e
+para mostrar de cara QUAL ambiente/host aquela instância opera — com um
+deploy por ambiente, essa é a informação que evita o operador achar que está
+em UAT quando está em PROD.
+
+Continua valendo: o servidor é quem autoriza de fato; a UI só evita oferecer
+uma ação que o 403 recusaria.
 """
 
 from __future__ import annotations
@@ -26,11 +27,11 @@ def eu(
     user: AuthenticatedUser = Depends(get_current_user),
     scope: Scope = Depends(get_scope),
 ) -> MeOut:
-    domains = scope.visible_domains()
-    environments = scope.visible_environments()
     return MeOut(
         subject=user.subject,
+        display_name=user.display_name,
         roles=sorted(user.roles),
-        visible_domains=sorted(domains) if domains is not None else None,
-        visible_environments=sorted(environments) if environments is not None else None,
+        environment=scope.environment,
+        host=scope.host,
+        is_admin=scope.is_admin,
     )

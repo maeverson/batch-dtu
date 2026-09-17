@@ -28,7 +28,7 @@ from catalog.db.models import (
     ReconciliationRun,
 )
 
-from ..authz import Scope, binding_matches
+from ..authz import Scope
 from ..deps import get_current_user, get_scope, get_session, job_for_operate, job_for_view
 from ..schemas import (
     ChangeRequestOut,
@@ -50,10 +50,6 @@ router = APIRouter(prefix="/jobs", tags=["catalogo"])
 _CHANGE_REQUEST_SLA = timedelta(hours=48)
 
 
-def _visivel(scope: Scope, job: Job) -> bool:
-    return any(binding_matches(b, job) for b in scope.bindings)
-
-
 @router.get("", response_model=list[JobOut])
 def listar(
     domain: str | None = None,
@@ -63,7 +59,11 @@ def listar(
     session: Session = Depends(get_session),
     scope: Scope = Depends(get_scope),
 ) -> list[Job]:
-    consulta = select(Job)
+    # Uma instância serve UM ambiente e UM host (G1 / `config.Settings`): o
+    # filtro nasce no SQL, não na role. Um job de PROD não aparece na
+    # instância de UAT nem para `batch.admin` — é a separação do deploy, e é
+    # ela que garante que o canal SSH daqui só alcança o host declarado.
+    consulta = select(Job).where(Job.environment == scope.environment, Job.host == scope.host)
     if domain:
         consulta = consulta.where(Job.domain == domain)
     if client:
@@ -74,11 +74,7 @@ def listar(
         consulta = consulta.where(Job.status == status_)
 
     todos = list(session.scalars(consulta.order_by(Job.process_name)))
-    # Filtro de escopo é em memória, não em SQL: os bindings são poucos por
-    # usuário (dezenas, não milhares), e a lógica de match já vive em
-    # `authz.binding_matches` — duplicá-la em SQL seria uma segunda fonte de
-    # verdade para a mesma regra.
-    return [j for j in todos if _visivel(scope, j)]
+    return [j for j in todos if scope.can_view(j)]
 
 
 @router.get("/{job_id}", response_model=JobOut)

@@ -14,18 +14,25 @@ from sqlalchemy.orm import sessionmaker
 from catalog.db.session import database_url
 
 from .config import Settings
-from .routers import audit, change_requests, executions, jobs, me
+from .routers import admin, audit, change_requests, executions, jobs, me
 from .security import TokenVerifier
 from .ssh_backend import SSHExecutionBackend
 
 
 def create_app(settings: Settings | None = None, *, execution_backend=None,
-               engine=None) -> FastAPI:
+               engine=None, validate_settings: bool = True) -> FastAPI:
     settings = settings or Settings.from_env()
+    # Falha de configuração aparece no start, não na primeira execução manual
+    # de um operador (`config.ConfigurationError`). O teste constrói o app com
+    # `validate_settings=False` quando quer defaults de desenvolvimento.
+    if validate_settings and execution_backend is None:
+        settings.validate()
+
     app = FastAPI(
         title="Batch DTU — Platform API",
-        description="API REST que abstrai o mecanismo de execução do parque "
-                    "de jobs agendados (ver docs/api/platform-api.md).",
+        description=f"API REST que abstrai o mecanismo de execução do parque de jobs "
+                    f"agendados (ver docs/api/platform-api.md). Esta instância serve "
+                    f"**{settings.environment}** no host **{settings.host}**.",
         version="0.1.0",
     )
 
@@ -53,6 +60,7 @@ def create_app(settings: Settings | None = None, *, execution_backend=None,
         )
 
     app.include_router(jobs.router)
+    app.include_router(admin.router)
     app.include_router(executions.router)
     app.include_router(change_requests.router)
     app.include_router(audit.router)
@@ -60,6 +68,13 @@ def create_app(settings: Settings | None = None, *, execution_backend=None,
 
     @app.get("/health", tags=["operacional"])
     def health() -> dict:
-        return {"status": "ok"}
+        """Readiness do pod E identificação do deploy: com uma instância por
+        ambiente, saber QUAL ambiente respondeu é parte do diagnóstico."""
+        return {
+            "status": "ok",
+            "environment": settings.environment,
+            "host": settings.host,
+            "log_backend": settings.log_backend,
+        }
 
     return app

@@ -17,6 +17,8 @@ collect-seed.sh (no host)  →  catalog import  →  catalog load  →  catalog 
                                                           catalog triage / catalog explain
                                                           catalog sample
                                                           catalog history
+
+processes/<domínio>/*.json  →  catalog ingest-processes        (fonte alternativa, seção 7)
 ```
 
 ### 1. `catalog import <pacote>` — monta o catálogo em memória, sem tocar banco
@@ -111,7 +113,37 @@ Roda `contract_schema.py` isoladamente — útil para validar um contrato antes 
 no pacote de coleta, ou para auditar o parque inteiro sem tocar banco. `--strict` faz o
 comando sair 1 se houver contrato inválido (sem `--strict`, só reporta).
 
-### 7. `catalog sample <host>` — checklist para a validação amostral por domínio
+### 7. `catalog ingest-processes <diretório>` — carga a partir da árvore de contratos
+
+Quando a fonte é um **diretório de contratos** e não um pacote de coleta — por exemplo
+`/opt2/batch_v2/batch-commons-framework/processes/base2`, onde cada `.json` é o contrato de um
+job:
+
+```
+catalog ingest-processes /opt2/batch_v2/batch-commons-framework/processes/base2 \
+  --host srv-sftp-2 --environment PROD --actor voce@contabilizei.com.br
+```
+
+Lendo de uma cópia local, mantenha o caminho do host com `--framework-root`: o `contract_path`
+gravado precisa ser o que o HOST vê, porque é ele que vai para `--process-file` na execução.
+
+Diferença para `catalog load`, e o que isso custa:
+
+| | `catalog load` | `catalog ingest-processes` |
+|---|---|---|
+| fonte | pacote do coletor | diretório de contratos |
+| traz | job, **agenda**, contrato, crontab, reconciliação | job + contrato |
+
+Sem o crontab **não há agenda**, e o comando não inventa uma: o job entra `on_demand`
+(`--status` muda) e nenhuma `job_schedule` é criada. Também **não apaga**: contrato que sumiu do
+diretório é relatado como ausente, nunca removido — isso é trabalho de `catalog reconcile`, que
+compara contra uma coleta completa.
+
+`--dry-run` roda tudo e reverte. Idempotente: rodar duas vezes não duplica job nem versão (a
+versão é append-only por hash). JSON quebrado não entra e o comando sai 1; contrato que falha no
+schema entra com o veredito gravado (mesma política do `load`).
+
+### 8. `catalog sample <host>` — checklist para a validação amostral por domínio
 
 ```
 catalog sample srv-sftp-2 --por-dominio 3 --seed 20260911 --out seed/raw/reports/amostra-srv-sftp-2.md
@@ -126,7 +158,7 @@ lado a lado, para conferir contra o crontab real.
 Esta é a peça que faltava para o critério de aceite "validação amostral por domínio" do
 `SPEC.md` — a ferramenta gera o checklist; a conferência em si é humana.
 
-### 8. `catalog history <processo>` — versionamento com diffs consultáveis
+### 9. `catalog history <processo>` — versionamento com diffs consultáveis
 
 ```
 catalog history prd_stb_col_rpt --host srv-sftp-2   # --host obrigatório se existir nos dois
@@ -138,7 +170,7 @@ tempo, com o valor **antes → depois** de cada campo alterado. Sem `--host`, e 
 existir em mais de um host (PROD e UAT são clones), o comando lista os hosts e pede para
 escolher.
 
-### 9. `catalog check-names <pacote>` — depuração do parser de nomes
+### 10. `catalog check-names <pacote>` — depuração do parser de nomes
 
 ```
 catalog check-names seed/raw/batch-seed-<host>-<stamp>

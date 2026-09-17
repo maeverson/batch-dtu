@@ -443,3 +443,25 @@ tr.clickable:hover td {
     transform: rotate(360deg);
   }
 }
+
+/* Etiqueta de ambiente na barra superior. Uma instância da API serve um
+   ambiente só (`GET /me`), então esta etiqueta diz sempre a verdade sobre o
+   que a tela está operando — PROD em vermelho por motivo óbvio. */
+.env-tag {
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border: 1px solid currentColor;
+}
+.env-tag--prod {
+  color: #b3261e;
+  background: #fdeceb;
+}
+.env-tag--uat,
+.env-tag--test,
+.env-tag--dev {
+  color: #1f6f43;
+  background: #e8f5ee;
+}
