@@ -34,6 +34,13 @@ fi
 chmod 0600 "$KEY_FILE"
 chmod 0644 "$KEY_FILE.pub"
 
+# `/keys` é bind mount: quem consome esta chave é a Platform API rodando NO
+# HOST, não algo aqui dentro. Sem este chown ela nasce root:root 0600 e o
+# usuário do host não consegue lê-la — nem pela API (asyncssh: Permission
+# denied) nem pelo `ssh -i` que este script sugere no fim. Mantém 0600: muda o
+# dono, não a exposição (o `ssh` recusa chave privada legível por outros).
+chown "${KEYS_UID:-1000}:${KEYS_GID:-1000}" "$KEY_FILE" "$KEY_FILE.pub"
+
 install -d -m 0700 -o backoffice_svc -g batch /home/backoffice_svc/.ssh
 {
     printf 'command="/usr/local/bin/batch-wrapper.sh",restrict '
@@ -50,7 +57,15 @@ cp "$KEY_FILE.pub" /home/batch_user/.ssh/authorized_keys
 chown batch_user:batch /home/batch_user/.ssh/authorized_keys
 chmod 0600 /home/batch_user/.ssh/authorized_keys
 
+# O parque tem DOIS escritores nesta árvore: `batch_user` (main.sh disparado
+# pelo cron, em logs/schedulers/) e `backoffice_svc` (o wrapper da plataforma,
+# em logs/backoffice/ — o que o promtail tailha). Ambos estão no grupo `batch`,
+# então é o grupo que precisa escrever; setgid para diretório novo nascer no
+# grupo certo. Sem isto o `tee` do wrapper falha e a correlação por
+# `execution_id` no Loki nunca recebe linha nenhuma.
 chown -R batch_user:batch "$FW_ROOT/logs"
+find "$FW_ROOT/logs" -type d -exec chmod 2775 {} +
+find "$FW_ROOT/logs" -type f -exec chmod 0664 {} + 2>/dev/null || true
 
 log "framework em $FW_ROOT"
 log "contratos: $(find "$FW_ROOT/processes" -name '*.json' | wc -l) | wrappers: $(find "$FW_ROOT/schedulers" -name '*.sh' | wc -l)"

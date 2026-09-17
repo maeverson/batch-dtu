@@ -62,10 +62,16 @@ Fundação de tudo: catálogo como fonte da verdade.
   pelo próprio `main.sh`
 - [x] Auditoria automática (`audit_event`) em toda ação de escrita — testado contra Postgres real
 
-**Entrega verificável**: execução manual de um job de teste em UAT via `curl`, com registro de auditoria —
-**pendente**: exige o container `docker/legacy` de pé (não builda neste ambiente de desenvolvimento;
-roda numa máquina com rede irrestrita) ou acesso real ao host. Toda a cadeia até o SSH está testada
-e verificada (`modules/platform-api/OPERACAO.md`); falta só o SSH de ponta a ponta.
+**Entrega verificável**: ✅ **execução manual via `curl` com registro de auditoria, verificada de
+ponta a ponta em 16/09/2026** contra o container `docker/legacy`: `POST /executions` → pré-validação
+(`--validate-file`) por SSH → execução real → `201 succeeded` (exit 0) → `audit_event`
+`execution.dispatch` + `execution.completed`.
+O bloqueio anterior ("não builda neste ambiente, rede restrita") era **diagnóstico errado**: o build
+falhava por conflito de dependência no `Dockerfile` (`coreutils` × `coreutils-single` da base
+`-minimal`), que quebraria em qualquer rede. Corrigido junto com outros dois defeitos do fixture que
+só apareceram ao rodar: a chave gerada em `docker/legacy/keys/` nascia `root:root` (ilegível para a
+API no host) e a árvore de logs não era gravável pelo `backoffice_svc` (grupo `batch` sem escrita),
+o que impedia qualquer log de execução de existir.
 **Desbloqueia**: `back-office` (bloqueante) e `observability` 1.3 (parcial — pode iniciar em paralelo assim que `execution_id` existir).
 
 ### Etapa 1.3 — `observability` (entregas da Fase 1) — *paralelo com 1.4*
@@ -77,9 +83,12 @@ e verificada (`modules/platform-api/OPERACAO.md`); falta só o SSH de ponta a po
   profile `legacy`/`all`) tateia `logs/backoffice/<domínio>/*.log` do host legado simulado e extrai
   `domain`/`process`/`execution_id` do **nome do arquivo** como labels do stream — o mesmo seletor que
   `GET /executions/{id}/logs` já consultava (`src/platform_api/routers/executions.py`, implementado na 1.2).
-  **Pendente**: verificação ponta a ponta (wrapper → promtail → Loki) depende do container `docker/legacy` de
-  pé, que **não builda neste ambiente de desenvolvimento** — mesmo bloqueio já registrado na 1.2; regex de
-  extração validada contra a convenção real de nome de arquivo, config validada por `docker compose config`
+  ✅ **Verificado ponta a ponta em 16/09/2026** (wrapper → promtail → Loki → API): execução manual
+  devolve as linhas do log correlacionadas por `execution_id`. Dois defeitos achados e corrigidos nessa
+  verificação: o promtail não extraía o timestamp da linha (o Loki carimbava a hora de *ingestão*, então
+  a linha caía fora da janela consultada) e a janela do endpoint era colada em
+  `[started_at, ended_at + 1s]` — estreita demais para o atraso de embarque, devolvendo execução
+  "sem log" que é indistinguível, para quem opera, de execução que não logou
 - [x] Painel de execuções manuais (Grafana) — dashboard `docker/grafana/dashboards/execucoes-manuais.json`
   (datasource Postgres novo em `docker/grafana/provisioning/datasources/datasources.yaml`, direto em
   `catalog.execution`/`catalog.job`): contagem e taxa de sucesso do período, execuções por hora por status,
@@ -129,6 +138,9 @@ Fase 1 abaixo.
 ## Fase 2 — Scheduler Gerenciado + Executor v3 + Descomissionamento
 
 > Pré-requisito: decisões ADR-001 (engine de orquestração) e ADR-002 (runtime do executor) fechadas no kick-off.
+> **Fechadas em 16/09/2026**: ADR-001 → EventBridge Scheduler + Step Functions + ECS Fargate;
+> ADR-002 → containerizar o shell legado primeiro (reimplementação em linguagem de serviço fica
+> para depois; heap fixo de 2GB continua em aberto como débito técnico). Ver `docs/adr/`.
 
 ### Etapa 2.1 — `secrets-migration` — *paralelo com 2.2*
 

@@ -34,3 +34,16 @@ scrape_configs:
           domain:
           process:
           execution_id:
+      # Sem isto o Loki carimba a linha com a hora em que o promtail LEU o
+      # arquivo, não com a hora do evento. Como o embarque tem alguns segundos
+      # de atraso, a linha cai fora da janela [started_at, ended_at] que
+      # `GET /executions/{id}/logs` consulta — e a execução aparece sem log.
+      # `main.sh` e o wrapper emitem RFC3339 no início de cada linha.
+      - regex:
+          expression: '^(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\s'
+      - timestamp:
+          source: ts
+          format: RFC3339
+          # Linha sem timestamp próprio (saída crua de step) herda a última
+          # conhecida + 1ns, preservando a ordem dentro da execução.
+          action_on_failure: fudge

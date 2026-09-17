@@ -67,14 +67,26 @@ Consequências práticas:
 
 ## Mapa do repositório
 
+**Convenção**: `modules/<módulo>/` tem **só documentação**. O código mora em `src/<pacote>/`
+(Python) ou `frontend/` (SPA) — ver os `CLAUDE.md` de `platform-api` e `back-office`, onde essa
+decisão está registrada.
+
 | Caminho | Conteúdo |
 |---|---|
 | `ROADMAP.md` | Ordem de execução dos módulos, dependências, checkboxes de progresso e marcos por fase |
 | `docs/` | Visão geral, princípios, contrato JSON, modelo de dados, segurança, observabilidade, migração, riscos |
-| `docs/adr/` | Decisões abertas (ADR-001 a 004) e template |
+| `docs/adr/` | Decisões (ADR-001 e 002 fechadas em 16/09/2026; 003 e 004) e template |
 | `docs/api/` | Contrato REST da Platform API (rascunho OpenAPI) |
 | `modules/<módulo>/` | `CLAUDE.md` (contexto do módulo) + `SPEC.md` (requisitos e critérios de aceite); módulos com código implementado também têm `OPERACAO.md` (referência de uso) |
 | `backlog/` | Backlog e critérios de aceite por fase |
+| `src/catalog/` | Pacote `catalog` — modelo de dados, parser/importador do inventário e CLI (`catalog import/load/reconcile/triage/...`); doc em `modules/job-catalog/OPERACAO.md` |
+| `src/platform_api/` | Pacote `platform_api` — FastAPI, OIDC/RBAC, `ExecutionBackend`; doc em `modules/platform-api/OPERACAO.md` |
+| `frontend/` | SPA do Back Office (Vite + React + TypeScript); doc em `modules/back-office/OPERACAO.md` |
+| `migrations/` | Alembic — schema `catalog`, incluindo o append-only de auditoria por trigger + `REVOKE` |
+| `tests/` | Suíte pytest (schema de contrato, parser, banco, wrapper legado, Platform API) |
+| `seed/` | Coletor (`seed/collect/`), vocabulário de curadoria (`seed/mappings/`) e pacotes coletados dos hosts (`seed/raw/`, **gitignored**: contêm nome de cliente, IP e caminho interno) |
+| `docker/` + `docker-compose.yaml` | Ambiente de desenvolvimento local por profile (postgres, loki/grafana/prometheus, keycloak, minio/sftp, vault). Referência: `docker/README.md` |
+| `docker/legacy/` | **Host legado simulado** — `main.sh` stub + `batch-wrapper.sh` (`command=` restrito) + fixtures. **Não é módulo da plataforma**: é o fixture contra o qual o backend SSH da Fase 1 é desenvolvido e verificado, sem tocar produção. É também o que falta de pé para o marco 🏁 da Fase 1 (reprocesso fim-a-fim) |
 
 ## Glossário rápido
 

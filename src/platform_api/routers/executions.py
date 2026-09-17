@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
@@ -25,7 +25,12 @@ from ..deps import get_current_user, get_execution_backend, get_scope, get_sessi
 from ..locking import JobLocked, try_lock_job
 from ..schemas import ExecutionOut, ExecutionRequestIn
 from ..security import AuthenticatedUser
-from ..ssh_backend import ExecutionRequest, InvalidExecutionRequest, build_invocation
+from ..ssh_backend import (
+    ExecutionBackendUnavailable,
+    ExecutionRequest,
+    InvalidExecutionRequest,
+    build_invocation,
+)
 
 router = APIRouter(prefix="/executions", tags=["execucao"])
 
@@ -119,7 +124,10 @@ async def executar(
         job=job, steps=corpo.steps, dates_pattern=datas, no_mail=corpo.no_mail,
         validate_only=True,
     )
-    resultado_validacao = await backend.dispatch(pre_validacao, execution_id=str(uuid.uuid4()))
+    try:
+        resultado_validacao = await backend.dispatch(pre_validacao, execution_id=str(uuid.uuid4()))
+    except ExecutionBackendUnavailable as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     if resultado_validacao.exit_code != 0:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -147,7 +155,20 @@ async def executar(
                 "justification": corpo.justification},
     ))
 
-    resultado = await backend.dispatch(request, execution_id=str(execution.id))
+    try:
+        resultado = await backend.dispatch(request, execution_id=str(execution.id))
+    except ExecutionBackendUnavailable as exc:
+        fim = datetime.now(timezone.utc)
+        execution.status = "failed"
+        execution.result = "failure"
+        execution.ended_at = fim
+        session.add(AuditEvent(
+            actor=user.subject, action="execution.backend_unavailable", target_type="execution",
+            target_id=str(execution.id), source="api", occurred_at=fim,
+            payload={"error": str(exc)},
+        ))
+        session.flush()
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
 
     fim = datetime.now(timezone.utc)
     execution.status = "succeeded" if resultado.exit_code == 0 else "failed"
@@ -229,6 +250,12 @@ async def logs(
     base_url = request.app.state.loki_base_url
     inicio = execucao.started_at or execucao.created_at
     fim = execucao.ended_at or datetime.now(timezone.utc)
+    # Margem: o agente que embarca o log (promtail) tem atraso de segundos, e
+    # o relógio do host executor não é o mesmo deste processo. Uma janela
+    # colada em [started_at, ended_at] devolve execução sem log nenhum — que
+    # é indistinguível, para quem opera, de execução que não logou.
+    inicio = inicio - timedelta(minutes=1)
+    fim = fim + timedelta(minutes=5)
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         resposta = await client.get(

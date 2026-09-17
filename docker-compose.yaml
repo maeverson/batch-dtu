@@ -169,6 +169,12 @@ services:
     image: batch-dtu/legacy-host:dev
     container_name: batch-legacy
     profiles: [legacy, all]
+    environment:
+      # Dono da chave gerada em ./docker/legacy/keys — quem a lê é a Platform
+      # API no host, não o container. Exporte KEYS_UID/KEYS_GID se seu usuário
+      # não for 1000.
+      KEYS_UID: ${KEYS_UID:-1000}
+      KEYS_GID: ${KEYS_GID:-1000}
     ports:
       - "${LEGACY_SSH_PORT:-2222}:22"
     volumes:
@@ -176,6 +182,12 @@ services:
       # para a Platform API usar. O diretório está no .gitignore.
       - ./docker/legacy/keys:/keys
       - legacy-logs:/opt2/batch_v2/batch-commons-framework/logs
+      # Contratos. O default são os 4 fixtures sintéticos embutidos na imagem —
+      # suficientes para testar o wrapper, mas NENHUM deles existe no catálogo,
+      # então "Executar" pela UI sempre falha na pré-validação. Para exercitar
+      # jobs reais, aponte LEGACY_PROCESSES_DIR para o `framework/processes` de
+      # um pacote de coleta (ver .env.example). Read-only: contrato é entrada.
+      - ${LEGACY_PROCESSES_DIR:-./docker/legacy/fixtures/processes}:/opt2/batch_v2/batch-commons-framework/processes:ro
 
   # ---------------------------------------------------------------------------
   # Armazenamento: destinos dos steps download/upload (101 aliases SFTP, 5 S3)

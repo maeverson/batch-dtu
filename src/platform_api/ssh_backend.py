@@ -44,6 +44,13 @@ class InvalidExecutionRequest(ValueError):
     a requisição inteira é recusada."""
 
 
+class ExecutionBackendUnavailable(RuntimeError):
+    """Backend de execução inalcançável (host fora do ar, chave ausente, SSH
+    recusado) — falha de infraestrutura, não do pedido. Distinta de
+    `InvalidExecutionRequest` porque o cliente não tem o que corrigir no
+    corpo da requisição; é o backend que está fora."""
+
+
 @dataclass(frozen=True)
 class ExecutionRequest:
     job: Job
@@ -154,12 +161,23 @@ class SSHExecutionBackend:
         import asyncssh
 
         linha = build_invocation(request, execution_id)
-        async with asyncssh.connect(
-            self._host, port=self._port, username=self._username,
-            client_keys=[self._key_path], known_hosts=self._known_hosts,
-            connect_timeout=self._connect_timeout,
-        ) as conn:
-            processo = await conn.run(linha, check=False)
+        try:
+            async with asyncssh.connect(
+                self._host, port=self._port, username=self._username,
+                client_keys=[self._key_path], known_hosts=self._known_hosts,
+                connect_timeout=self._connect_timeout,
+            ) as conn:
+                processo = await conn.run(linha, check=False)
+        except (OSError, asyncssh.Error) as exc:
+            # Host legado fora do ar, chave ausente, handshake recusado —
+            # nunca deixar isso subir cru: sem isto o erro escapa como 500
+            # sem corpo, e o CORSMiddleware não tem a chance de anotar a
+            # resposta (Starlette só injeta os headers de CORS na resposta
+            # que passa pela pilha normal) — o navegador reporta "Failed to
+            # fetch" em vez do motivo real.
+            raise ExecutionBackendUnavailable(
+                f"backend SSH inalcançável ({self._host}:{self._port}): {exc}"
+            ) from exc
         return ExecutionResult(
             execution_id=execution_id,
             exit_code=processo.returncode if processo.returncode is not None else -1,

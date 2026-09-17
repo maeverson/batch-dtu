@@ -10,7 +10,10 @@
 # comportamento do sshd com `command=`, não a distro.
 FROM almalinux:9-minimal
 
-RUN microdnf install -y openssh openssh-server shadow-utils jq coreutils findutils gzip \
+# `coreutils` NÃO entra na lista: a base `-minimal` já traz `coreutils-single`
+# (mesmos utilitários, empacotados como binário multicall) e os dois conflitam —
+# pedir `coreutils` aqui quebra o depsolve.
+RUN microdnf install -y openssh openssh-server shadow-utils jq findutils gzip \
     && microdnf clean all \
     && rm -rf /var/cache/yum
 

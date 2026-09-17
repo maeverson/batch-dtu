@@ -11,12 +11,21 @@ docker compose --profile auth up -d          # Keycloak (OIDC local)
 docker compose --profile legacy up -d --build  # host legado (SSH + main.sh + wrapper)
 ```
 
-O build do `legacy` puxa `almalinux:9-minimal` e instala pacotes via `microdnf` — se isso falhar
-por DNS/allowlist de rede (acontece em ambientes de desenvolimento com rede restrita, como este),
-**a garantia de segurança do backend SSH não depende do container estar de pé**: ela é verificada
-rodando o wrapper de verdade via bash, sem docker — ver `tests/test_platform_api_ssh_integration.py`
-e a seção "Verificar sem o container" abaixo. Precisa do container de fato só para o marco
-"reprocesso fim-a-fim" (que exige um SSH real de ponta a ponta).
+O container `legacy` sobe e o caminho completo (`POST /executions` → SSH → `main.sh` → log no Loki)
+foi verificado em 16/09/2026. Se ele falhar no seu ambiente, note que **a garantia de segurança do
+backend SSH não depende do container estar de pé**: ela é verificada rodando o wrapper de verdade
+via bash, sem docker — ver `tests/test_platform_api_ssh_integration.py` e a seção "Verificar sem o
+container" abaixo.
+
+Dois pontos do fixture que valem saber (ambos já corrigidos, mas explicam o formato do ambiente):
+
+- A chave gerada em `docker/legacy/keys/` precisa pertencer ao **usuário do host**, porque quem a lê
+  é a Platform API rodando fora do container. O `entrypoint.sh` faz `chown` para `KEYS_UID`/`KEYS_GID`
+  (default `1000`) — se o seu `id -u` for outro, exporte-os (ver `.env.example`).
+- Os contratos servidos são, por default, os **4 fixtures sintéticos** da imagem. Nenhum deles existe
+  no catálogo, então executar um job real pela UI falha na pré-validação. Para exercitar jobs reais,
+  aponte `LEGACY_PROCESSES_DIR` para o `framework/processes` de um pacote de coleta (ver
+  `.env.example`) — conteúdo de cliente real, uso estritamente local.
 
 ```bash
 export DATABASE_URL=postgresql+psycopg://batch_app:batch_app_dev@localhost:5432/batch_catalog
